@@ -1,0 +1,4283 @@
+---
+title: Impact of Cognitive Control on Theory of Mind in Early Adolescent Antisocial Phenotypes
+author: "Drew E. Winters, PhD."
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+    html_document:
+      theme: sandstone
+      highlight: monochrome 
+      code_folding: hide
+      number_sections: true
+      toc: true
+      toc_depth: 5
+      toc_float: true
+      df_print: paged
+---
+* Initial Info
+  + Preregistered collection and analysis: https://doi.org/10.17605/OSF.IO/BHWEU
+  + Publication this data replicates: https://doi.org/10.1080/02699931.2023.2195154
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+# suppressing error for multiple iterations of a model 
+  # over 10,000 resamples - we expect a few singular fits 
+  # because this doesn't impact subsequent resamples we suppress this error
+control=lme4::lmerControl(
+  check.conv.singular = lme4::.makeCC(action = "ignore",  tol = 1e-4)
+  )
+# correlation plot function for use with "corrplot" package
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], ...)
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# file path base
+base = "D:\\CU OneDrive Sync\\2 Projects\\Me-S2-CU_CC-ToM_dual\\dual_task_analysis\\results"
+base_dat = "D:\\CU OneDrive Sync\\2 Projects\\Me-S2-CU_CC-ToM_dual\\dual_task_data\\raw_data"
+base_fig = "D:\\CU OneDrive Sync\\2 Projects\\Me-S2-CU_CC-ToM_dual\\dual_task_analysis\\figures"
+# file name for data
+dataframe_final_subs<-paste0(base_dat,"\\dataframe_final_subs-85.csv")
+reliability<- paste0(base_dat,"\\participant_self_reports_dataframe-full.csv")
+# file names to save results 
+tom_change_accuracy_total<- paste0(base,"\\tom_change_accuracy_total.csv")
+tom_change_accuracy_affective<- paste0(
+  base,"\\tom_change_accuracy_affective.csv"
+  )
+tom_change_accuracy_physical <- paste0(
+  base,"\\tom_change_accuracy_physical.csv"
+  )
+tom_change_accuracy_cognitive <- paste0(
+  base,"\\tom_change_accuracy_cognitive.csv")
+tom_change_RT_total <- paste0(base,"\\tom_change_RT_total.csv"
+                              )
+tom_change_RT_affective <- paste0(base,"\\tom_change_RT_affective.csv")
+tom_change_RT_cognitive <- paste0(base,"\\tom_change_RT_cognitive.csv")
+tom_change_RT_physical <- paste0(base,"\\tom_change_RT_physical.csv")
+tom_change_accuracy_affective_physical_contrast <- paste0(
+  base,
+  "\\tom_change_accuracy_affective-physical_contrast.csv"
+  )
+tom_change_accuracy_cognitive_physical_contrast <- paste0(
+  base,
+  "\\tom_change_accuracy_cognitive-physical_contrast.csv"
+  )
+tom_change_accuracy_affective_cognitive_contrast <- paste0(
+  base,
+  "\\tom_change_accuracy_affective-cognitive_contrast.csv"
+  )
+total_load_eff_file <- paste0(base,"\\tom_total_load_eff.csv")
+at_load_eff_file <- paste0(base,"\\tom_affective_load_eff.csv")
+ct_load_eff_file <- paste0(base,"\\tom_cognitive_load_eff.csv")
+pc_load_eff_file <- paste0(base,"\\tom_physical_load_eff.csv")
+delq_file <- paste0(base,"\\delequency_pred.csv")
+
+```
+
+## Packages Used 
+```{r, message=FALSE, warning=FALSE}
+  ## confirmatory factor analysis
+library(lavaan)
+  ## Power analysis
+library(simr)
+
+  ## model testing for mixed effects
+library(lmerTest) # mixed effects modeling
+
+  ## for testing zero inflated models
+library(pscl)
+
+  ## for model diagnostics
+library(performance)
+library(see)
+
+  # for plotting
+library(dplyr)
+library(magrittr)
+library(forcats)
+library(ggplot2) 
+# library(ggstatsplot) # stat plot - call later to suppress weird cite message
+# library(corrplott) # correlation plots - call later without loading here
+# library(crayon) # colored output - call later without loading here
+
+  # for descriptive statistics
+library(psych) 
+
+```
+
+## Data Loading
+
+```{r}
+dat <- read.csv(file.path(dataframe_final_subs))
+```
+
+
+## Functions Used
+### Checking Data Assumptions
+```{r}
+  # checking for model singularity (to be used in assumptions function)
+singularity_chk <- function(x){
+  if (check_singularity(x)==FALSE){
+    return(crayon::green("OK: Model Not Singular"))
+  } 
+  else if (check_singularity(x)==TRUE){
+    return(crayon::red("Warning: Model Singular"))
+  }
+}
+
+  # checking covergence of the model (to be used in assumptions function)
+convergence_chk <- function(x){
+  if (check_convergence(x)[1]==TRUE){
+    return(crayon::green("OK: Model Converged"))
+  } 
+  else if (check_convergence(x)[1]==FALSE){
+    return(crayon::red("Warning: Model did not converge"))
+  }
+}
+
+
+  # checking multicollinerity of the model (to be use in assumptions function)
+collinearity_chk <- function(x){
+  mcoll<-any(car::vif(x)[1:11] >3)
+  if (mcoll == "FALSE") {
+    return(crayon::green(("OK: No Multicollinearity (All IVs VIF < 3)")))
+  }
+  else if (mcoll == "TRUE") {
+    return(crayon::red(("WARNING: Multicolinearity exists (Some IVs VIF > 3)")))
+  }
+}
+
+  # Checking if IVs are exogenous (not endogenous)
+    ## see: https://doi.org/10.1177/1094428119877457
+endogenity_chk <- function(x, data, ch_lag=16){
+  library(plm)
+  char_all<-Reduce(paste,deparse(x@call$formula))
+  char_formula<-(substr(char_all,1,(nchar(char_all)-ch_lag)))
+  re<-plm(
+    formula(char_formula), 
+    data=data, 
+    model="random"
+  )
+  fe<-lm(formula(char_formula), data=data)
+  ex_results<-phtest(
+    re,
+    fe
+  )
+  if (ex_results$p.value > 0.05){
+    return(crayon::green(("OK: IVs are exogenous (p > 0.05)")))
+  } else if (ex_results$p.value < 0.05) {
+    return(crayon::red(("Warning: IVs are endogenous (p < 0.05)")))
+  }
+}
+
+  # checking if random effects models the data better than fixed effects alone
+re_necessary_chk <- function(xx, data, ch_lag=16){
+  char_all<-Reduce(paste,deparse(xx@call$formula))
+  char_formula<-(substr(char_all,1,(nchar(char_all)-ch_lag)))
+  fix <- lm(formula(char_formula), data=data)
+  re <- lmer(xx,data=data, REML = FALSE, control = control)
+  re_nec_results <- anova(re, fix)
+  if (re_nec_results$`Pr(>Chisq)`[2] < 0.06){
+    return(crayon::green(("OK: Random effects indicated")))
+  } else if (re_nec_results$`Pr(>Chisq)`[2] > 0.06) {
+    return(crayon::red(("Warning: Random effects not necessary")))
+  }
+}
+
+
+  # checking all data assumptions
+assumptions <- function(model, data, ch_lag=16) {
+  library(performance)
+  library(see)
+  set.seed(734)
+  model_re <- lme4::lmer(model, data=data) 
+  singularity <- singularity_chk(model_re)
+  convergence <- convergence_chk(model_re)
+  heteroscedasticity<-check_heteroscedasticity(model_re) 
+  autocorrelation<-check_autocorrelation(model_re) 
+  normality <- check_residuals(model_re) 
+  collinearity <- (collinearity_chk(model_re)) 
+  outliers <- check_outliers(model_re)
+  endogenity <- endogenity_chk(model_re, data= data, ch_lag)
+  re_nec <- re_necessary_chk(model_re, data= data, ch_lag)
+  cat(" Convergence:      ")
+  cat(convergence)
+  cat("\n Singularity:      ")
+  cat(singularity)
+  cat("\n Heteroscedacity:  ")
+  print(heteroscedasticity)
+  cat(" Autocorrelation:  ")
+  print(autocorrelation)
+  cat("\n Residual dist:    ")
+  print(normality)
+  cat(" Multicollinerity: ")
+  cat(collinearity)
+  cat("\n Endogenity:       ")
+  cat(endogenity)
+  cat("\n Random effects:   ")
+  cat(re_nec)
+  cat("\n Outliers:         ")
+  print(outliers)
+}
+
+```
+
+
+### Bootstrapping and Reporting
+```{r}
+  # function for reporting bootstrapped corrected values
+mix_boot_report <- function(model, data=dat_long) {
+  # functions
+    ## 1) extract parameters for bootstrapping 
+  mySumm2 <- function(.) {
+    c(
+      beta=fixef(.),                                # fixed effects
+      tval=as.data.frame(
+        summary(.)$coefficients
+        )$`t value`,                                # t values (p correction)
+      sigma_resid_sd=sigma(.),                      # random residual sd
+      signa_resid_var=var(resid(.)),                # random residual variance
+      sig01_random_eff_sd=sqrt(unlist(VarCorr(.))), # random effect sd
+      sig01_random_eff_var=unlist(VarCorr(.))       # random effect variance
+    )
+  }
+    ## 2) Satterwaite correction for bootstrapped corrected p values
+  sat_p_val <- function(dof_mod, boot_df, tind) {
+    p_vals <- list()
+    dof <- as.data.frame(summary(dof_mod)$coefficients)$df
+    dof_ind <- 0
+    for (ii in tind) {
+      dof_ind <- (dof_ind + 1)
+      p_value <- 2 * (
+        1 - pt(abs(as.data.frame(boot_df$stats$rep.mean)[ii,]), dof[dof_ind])
+        ) 
+      p_vals <- append(p_vals,p_value)
+    }
+    return(unlist(p_vals))
+  }
+  
+  # bootstrapping
+  set.seed(1985) # setting seed
+  boot.ci <- lmeresampler::bootstrap(
+    lme4::lmer(
+      model, 
+      data = data), 
+    .f= mySumm2, 
+    B = 10000, 
+    type = "reb", 
+    reb_type = 1)
+    # we resample 10,000 bootstraps for proper estimation fo CIs
+    # we use random effect block bootstrapping 
+      # a non-parametric bootstrap resampling (1) residuals (2) within clusters
+        ## (1) Residual resampling does not impose normality of residuals
+          #> addresses issues with the model if residuals are non-normal
+          #> this makes residual bootstrapping a more reliable than parametric
+          #> see this link: https://www.jstor.org/stable/43304840
+          #> https://www.stat.cmu.edu/~cshalizi/uADA/13/lectures/which-bootstrap-when.pdf
+        ## (2) looseness assumptions on the residual covariance structure
+          #> i.e., this approach doesn't require a specific covariance structure 
+          #> this is important because:
+            #> subjects in the non-test condition are expected to not change
+            #> loosening this assumption improves estimation for this task
+      # this method is robust to failure of dependence assumptions in MLM 
+        ## see: https://www.jstor.org/stable/43304840
+  
+  # identifying indices for metrics extracted
+  beta_ind = which(
+    startsWith(as.data.frame(confint(boot.ci, type = "norm"))$term, "beta"))
+  tval_ind = which(
+    startsWith(as.data.frame(confint(boot.ci, type = "norm"))$term, "tval"))
+  resid_sd_ind = which(
+    startsWith(as.data.frame(
+      confint(boot.ci, type = "norm"))$term, "sigma_resid_sd"))
+  rand_eff_sd_ind = which(
+    startsWith(as.data.frame(
+      confint(boot.ci, type = "norm"))$term, "signa_resid_var"))
+  resid_var_ind = which(
+    startsWith(as.data.frame(
+      confint(boot.ci, type = "norm"))$term, "sig01_random_eff_sd"))
+  rand_eff_var_ind = which(
+    startsWith(as.data.frame(
+      confint(boot.ci, type = "norm"))$term, "sig01_random_eff_var"))
+  
+  # extracting corrected betas
+  total_results <- as.data.frame(
+    boot.ci[5])[beta_ind , c("stats.term", "stats.rep.mean", "stats.se")]
+  colnames(total_results) <- c("term", "beta.boot", "se.boot")
+  
+  # extracting corrected t values
+  t_df <- as.data.frame(
+    as.data.frame(boot.ci[5])[tval_ind , c("stats.rep.mean")])
+  colnames(t_df) <- "t.boot"
+  total_results <- cbind(total_results, t_df)
+  
+  # extracting corrected p values
+  p_df <- as.data.frame(sat_p_val(model,boot.ci,tval_ind))
+  colnames(p_df) <- "p.satw_boot"
+  total_results <- cbind(total_results, p_df)
+  
+  # extracting corrected random effects
+    ## var
+  rand_var <- as.data.frame(
+    as.data.frame(boot.ci[5])[rand_eff_var_ind , c("stats.rep.mean")])
+  rand_var <- cbind("rand_var",rand_var)
+  rand_var_se <- as.data.frame(boot.ci[5])[rand_eff_var_ind , c("stats.se")]
+  rand_var <- cbind(rand_var,t(as.data.frame(c(rand_var_se,NA,NA))))
+  colnames(rand_var) <- colnames(total_results)
+  rownames(rand_var) <- 21
+  total_results <- rbind(total_results, rand_var)
+    ## sd
+  rand_sd <- as.data.frame(
+    as.data.frame(boot.ci[5])[rand_eff_sd_ind , c("stats.rep.mean")])
+  rand_sd <- cbind("rand_sd",rand_sd)
+  rand_sd_se <- as.data.frame(boot.ci[5])[rand_eff_sd_ind , c("stats.se")]
+  rand_sd <- cbind(rand_sd,t(as.data.frame(c(rand_sd_se,NA,NA))))
+  colnames(rand_sd) <- colnames(total_results)
+  rownames(rand_sd) <- 22
+  total_results <- rbind(total_results, rand_sd)
+  
+  # extracting corrected random effect residuals 
+    ## var
+  resid_var <- as.data.frame(
+    as.data.frame(boot.ci[5])[resid_var_ind , c("stats.rep.mean")])
+  resid_var <- cbind("resid_var",resid_var)
+  resid_var_se <- as.data.frame(boot.ci[5])[resid_var_ind , c("stats.se")]
+  resid_var <- cbind(resid_var,t(as.data.frame(c(resid_var_se,NA,NA))))
+  colnames(resid_var) <- colnames(total_results)
+  rownames(resid_var) <- 23
+  total_results <- rbind(total_results, resid_var)
+    ## sd
+  resid_sd <- as.data.frame(
+    as.data.frame(boot.ci[5])[resid_sd_ind , c("stats.rep.mean")])
+  resid_sd <- cbind("resid_sd",resid_sd)
+  resid_sd_se <- as.data.frame(boot.ci[5])[resid_sd_ind , c("stats.se")]
+  resid_sd <- cbind(resid_sd,t(as.data.frame(c(resid_sd_se,NA,NA))))
+  colnames(resid_sd) <- colnames(total_results)
+  rownames(resid_sd) <- 24
+  total_results <- rbind(total_results, resid_sd)
+  
+  # extracting bootstrapped confidence intervals (CI)
+    ## for betas we use the percentile confidence interval
+      ### this method uses percentiles of the bootstrap sampling distribution 
+          # and does not impose assumptions of distribution normality
+      ### we use this because the non-normality of interactions and standard 
+          # error equation is not straight forward for interaction terms
+          # see: https://www.e-education.psu.edu/eme210/node/608 
+    ## for random effects we use normal confidence intervals
+      ### this method uses the standard error of the sampling distribution and 
+          # imposes assumptions of normality.
+      ### but why do this? 
+        #### mixed effects already imposes assumptions of normality on residual 
+            # distribution in its estimation
+        #### The random effect residual distribution is theoretical as a source 
+            # of unknown variance thus is should be normal  
+        #### bootstrapping should make residual distribution normal over 10,000 
+            # resamples (if not already normal)
+        #### it is important to note that this will have no bearing on the 
+            # inferences made for the betas predicting the outcome of interest
+        #### practically this won't make a substantive difference but 
+            # theoretically this seems most sound
+    ## why use one CI method for on and another method for another? 
+      ### to summarize the case for why we would use different CI methods: 
+        #### non-normality of betas need to be considered
+        #### normal distribution of random effect residuals needs considered
+  beta.ci <- as.data.frame(
+    confint(boot.ci, type = "perc"))[beta_ind , c("lower", "upper")]
+  rand_eff_sd.ci <- as.data.frame(
+    confint(boot.ci, type = "norm"))[rand_eff_sd_ind , c("lower", "upper")]
+  resid_sd.ci <- as.data.frame(
+    confint(boot.ci, type = "norm"))[resid_sd_ind , c("lower", "upper")]
+  rand_eff_var.ci <- as.data.frame(
+    confint(boot.ci, type = "norm"))[rand_eff_var_ind , c("lower", "upper")]
+  resid_var.ci <- as.data.frame(
+    confint(boot.ci, type = "norm"))[resid_var_ind , c("lower", "upper")]
+  beta.boot_ci <- rbind(
+    beta.ci,rbind(rand_eff_sd.ci,resid_sd.ci))
+  beta.boot_ci <- rbind(
+    beta.boot_ci,rbind(rand_eff_var.ci,resid_var.ci))
+  colnames(beta.boot_ci) <- c("ci.boot_low", "ci.boot_hi")
+  total_results <- cbind(total_results, beta.boot_ci)
+  
+  # extracting r2 values
+  r2_vals <- performance(model)
+  r2s <- rbind(c(as.data.frame(r2_vals)$R2_marginal,NA,NA,NA,NA,NA), 
+               c(as.data.frame(r2_vals)$R2_conditional,NA,NA,NA,NA,NA))
+  r2s <- cbind(as.data.frame(c("R2.marginal","R2.conditional")),r2s)
+  colnames(r2s) <- colnames(total_results)
+  rownames(r2s) <- c(25, 26)
+  total_results <- rbind(total_results, r2s)
+  
+  # removing "beta." prefix to term names
+  total_results$term <- stringr::str_replace_all(
+    total_results$term, "beta.", "")
+  
+  # removing term column and making row name
+  rownames(total_results) <- total_results$term
+  total_results <- total_results[,2:7]
+  
+  # returning dataframe at 3 digits
+  return(format(total_results ,digits = 3))
+}
+```
+
+## Structuring Data
+* Repeated measures (Long) Data
+```{r}
+  # stacking variables
+ids <- rep(1:length(dat$tom_s_acc_total_sum),2)
+time<- c(rep(0, length(dat$tom_s_acc_total_sum)), 
+         rep(1, length(dat$tom_s_acc_total_sum)))
+cu_long<- c(dat$cu_total_mean,dat$cu_total_mean)
+sdq_cd_long<- c((dat$sdq_cd/5),(dat$sdq_cd/5)) # for a mean score
+tom_acc_total<- c(dat$tom_s_acc_total_sum,dat$tom_d_acc_total_sum)
+tom_acc_at<- c(dat$tom_s_acc_at_sum,dat$tom_d_acc_at_sum)
+tom_acc_ct<- c(dat$tom_s_acc_ct_sum,dat$tom_d_acc_ct_sum)
+tom_acc_pc<- c(dat$tom_s_acc_pc_sum,dat$tom_d_acc_pc_sum)
+tom_rt_total<- c(dat$tom_s_rt_total_mean,dat$tom_d_rt_total_mean)
+tom_rt_at<- c(dat$tom_s_rt_at_mean,dat$tom_d_rt_at_mean)
+tom_rt_ct<- c(dat$tom_s_rt_ct_mean,dat$tom_d_rt_ct_mean)
+tom_rt_pc<- c(dat$tom_s_rt_pc_mean,dat$tom_d_rt_pc_mean)
+sex_male_long<- c(dat$sex_male , dat$sex_male ) 
+race_white_long<- c(dat$race_white , dat$race_white )
+iq_long<- c(dat$iq , dat$iq )
+careless_long<- c(dat$careless , dat$careless )
+sdq_hyperactivity_long<- c((dat$sdq_hyperactivity/5),
+                           (dat$sdq_hyperactivity/5)) # for a mean score
+sdq_internalizing_long<- c((dat$sdq_internalizing/10),
+                           (dat$sdq_internalizing/10)) # for a mean score
+order_var_long<- c(dat$order_var , dat$order_var )
+group_di_long<- c(dat$group_di , dat$group_di )
+
+  # placing in long format dataframe
+dat_long = data.frame(
+  id = ids,
+  time = time, 
+  cu = cu_long,
+  sdq_cd = sdq_cd_long,
+  tom_acc_total = tom_acc_total, 
+  tom_acc_at = tom_acc_at, 
+  tom_acc_ct = tom_acc_ct,
+  tom_acc_pc = tom_acc_pc,
+  tom_rt_total = tom_rt_total,
+  tom_rt_at = tom_rt_at,
+  tom_rt_ct = tom_rt_ct,
+  tom_rt_pc = tom_rt_pc,
+  sex_male = sex_male_long,
+  race_white = race_white_long,
+  iq = iq_long,
+  careless = careless_long,
+  sdq_hyperactivity = sdq_hyperactivity_long,
+  sdq_internalizing = sdq_internalizing_long,
+  order_var = order_var_long,
+  group_di = group_di_long
+  )
+
+```
+
+### Interaction terms
+* Derived using Centered Residual Interaction Terms
+* see: 
+  + https://doi.org/10.1177/0013164412445473
+  + https://doi.org/10.1207/s15328007sem1304_1 
+* Also this approach keeps us from violating regression/mixed models assumptions
+  + for assumptions see: https://doi.org/10.1177/1094428119877457 
+
+#### Repeated Measure Interactions
+* Repeated Measures (Long Form) Interactions
+```{r}
+  # group x time 
+dat_long$int_gptime <- resid(
+  lm(I(group_di*time) ~ group_di+time, data=dat_long)
+  )
+
+  # cu x cd
+dat_long$int_cdcu <- resid(
+  lm(I(sdq_cd*cu) ~ sdq_cd+cu, data=dat_long)
+  )
+dat_long$int_cdcugp <- resid(
+  lm(I(sdq_cd*cu*group_di) ~ sdq_cd+cu+group_di, data=dat_long)
+  )
+dat_long$int_cdcugptime <- resid(
+  lm(I(sdq_cd*cu*group_di*time) ~ sdq_cd+cu+group_di+time, data=dat_long)
+  )
+dat_long$int_cdcutime <- resid(
+  lm(I(sdq_cd*cu*time) ~ sdq_cd+cu+time, data=dat_long)
+  )
+
+  # cu
+dat_long$int_cugp <- resid(
+  lm(I(cu*group_di) ~ cu+group_di, data=dat_long)
+  )
+dat_long$int_cutime <- resid(
+  lm(I(cu*time) ~ cu+time, data=dat_long)
+  )
+dat_long$int_cugptime <- resid(
+  lm(I(cu*group_di*time) ~ cu+group_di+time, data=dat_long)
+  )
+
+  # cd
+dat_long$int_cdgp <- resid(
+  lm(I(sdq_cd*group_di) ~ sdq_cd+group_di, data=dat_long)
+  )
+dat_long$int_cdtime <- resid(
+  lm(I(sdq_cd*time) ~ sdq_cd+time, data=dat_long)
+  )
+dat_long$int_cdgptime <- resid(
+  lm(I(sdq_cd*group_di*time) ~ sdq_cd+group_di+time, data=dat_long)
+  )
+```
+
+#### Single Measure Interactions
+* Single Measure (Wide) Interactions
+```{r}
+dat$int_cutest <- resid(
+  lm(I(dat$group_di * dat$cu_total_mean) ~ dat$group_di + dat$cu_total_mean)
+  )
+dat$int_cdtest <- resid(
+  lm(I(dat$group_di * dat$sdq_cd) ~ dat$group_di + dat$sdq_cd)
+  )
+dat$int_cucd <- resid(
+  lm(I(dat$sdq_cd * dat$cu_total_mean) ~ dat$sdq_cd + dat$cu_total_mean)
+  )
+dat$int_cucdtest <- resid(
+  lm(
+    I(dat$sdq_cd * dat$cu_total_mean * dat$group_di) ~ 
+      dat$sdq_cd + dat$cu_total_mean + dat$group_di)
+  )
+```
+
+# Sample Descriptives
+## Continuous Descriptive Stats
+```{r}
+  # continuous descriptive stats
+(cont_des<-as.data.frame(
+  describe(
+    dat[
+      c(
+        "iq", 
+        "age", 
+        "sdq_cd", 
+        "cu_total_sum", 
+        "sdq_hyperactivity", 
+        "sdq_internalizing",
+        "careless"
+        )]))[,
+             c("mean","sd","min","max","range")
+             ])
+
+write.csv(
+  cont_des,
+  paste0(base,"\\demographics_continuous.csv"),
+  row.names=TRUE
+)
+
+```
+
+```{r}
+desc_gp <- dat[
+      c(
+        "iq", 
+        "age", 
+        "sdq_cd", 
+        "cu_total_sum", 
+        "sdq_hyperactivity", 
+        "sdq_internalizing",
+        "careless",
+        "group_di"
+        )]
+  # continuous descriptive stats control group
+cont_des_gp0<-as.data.frame(
+  describeBy(
+    desc_gp, group = "group_di")$'0')[1:7,
+             c("mean","sd","min","max","range")
+             ]
+ctrl_row <- t(as.data.frame(c("*CONTROL GROUP*", "-", "-", "-", "-")))
+rownames(ctrl_row) <- "group compare"
+colnames(ctrl_row) <- colnames(cont_des_gp0)
+
+cont_des_gp0 <- rbind(ctrl_row, cont_des_gp0)
+
+  # continuous descriptive stats test group
+cont_des_gp1<-as.data.frame(
+  describeBy(
+    desc_gp, group = "group_di")$'1')[1:7,
+             c("mean","sd","min","max","range")
+             ]
+test_row <- t(as.data.frame(c("*TEST GROUP*", "-", "-", "-", "-")))
+rownames(test_row) <- "group compare"
+colnames(test_row) <- colnames(cont_des_gp1)
+
+cont_des_gp1 <- rbind(test_row, cont_des_gp1)
+
+  # t tests
+models_t <- function(x) {
+  model1 <- t.test(x ~ group_di,
+                 data = desc_gp)$p.value
+  return(model1)
+}
+
+t_out <- as.data.frame(apply(desc_gp[,1:7],2, models_t))
+colnames(t_out) <- "t.test_p"
+tt <- as.data.frame("-")
+rownames(tt) <- "group compare"
+colnames(tt) <- "t.test_p"
+t_out <- rbind(tt, t_out)
+
+cont_des_gp <- cbind(cont_des_gp0, cont_des_gp1)
+
+(cont_des_gp <- cbind(cont_des_gp, t_out))
+
+
+write.csv(
+  cont_des_gp,
+  paste0(base,"\\demographics_continuous_group.csv"),
+  row.names=TRUE
+)
+```
+
+
+## Dichotomous Descriptive Stats
+### Sex
+```{r}
+sex_des <- as.data.frame(rbind(as.character(table(dat$sex_male)),round((table(dat$sex_male) / sum(table(dat$sex_male))*100),3) ))
+colnames(sex_des) <- c("female", "male")
+rownames(sex_des) <- c("#", "%")
+sex_des
+
+write.csv(
+  sex_des,
+  paste0(base,"\\demographics_sex.csv"),
+  row.names=TRUE
+)
+
+```
+
+#### Sex by group
+```{r}
+sex_gp <- data.frame(matrix(table(dat$sex_male, dat$group_di),nrow=2))
+rownames(sex_gp) <- c("female", "male")
+colnames(sex_gp) <- c("control", "test")
+
+sex_gp$p <- c(chisq.test(sex_gp)$p.value, "-")
+
+sex_gp
+
+write.csv(
+  sex_gp,
+  paste0(base,"\\demographics_sex_by_group.csv"),
+  row.names=TRUE
+)
+```
+
+### Race
+* race categories
+  + 1= american Indian or native Alaskan
+  + 2= Asian 
+  + 3= black
+  + 4= Hispanic or Latino
+  + 5= native Hawaiian or other pacific islander 
+  + 6= white
+  + 7= mixed race
+```{r}
+race_des <- as.data.frame(rbind(as.character(table(dat$race)),round((table(dat$race) / sum(table(dat$race))*100),3) ))
+colnames(race_des) <- c("am_ind", "asian", "black", "hisp", "white", "mixed")
+rownames(race_des) <- c("#", "%")
+race_des
+
+write.csv(
+  race_des,
+  paste0(base,"\\demographics_race.csv"),
+  row.names=TRUE
+)
+
+```
+
+#### White by group
+```{r}
+white_gp <- data.frame(matrix(table(dat$race_white, dat$group_di),nrow=2))
+rownames(white_gp) <- c("non-white", "white")
+colnames(white_gp) <- c("control", "test")
+
+white_gp$p <- c(chisq.test(white_gp)$p.value, "-")
+
+white_gp
+
+write.csv(
+  white_gp,
+  paste0(base,"\\demographics_white_by_group.csv"),
+  row.names=TRUE
+)
+```
+
+
+### Phenotype Clinical
+* SDQ cutoffs based on normative info: 
++ https://www.sdqinfo.org/norms/USNorm5.pdf
++ https://doi.org/10.1186%2Fs13034-021-00437-8
+  + conduct = 3 (90th percentile)
+  + hyperactivity = 6 (90th percentile)
+  + internalizing = 8 (90th percentile)
+
+#### N by cutoff
+```{r}
+# CU
+cu_hi_des <- as.data.frame(rbind(as.character(table(dat$cu_high)),round((table(dat$cu_high) / sum(table(dat$cu_high))*100),2) ))
+colnames(cu_hi_des) <- c("norm_cu", "high_cu")
+rownames(cu_hi_des) <- c("#", "%")
+
+# CD
+clin_cd <- rep(0,length(dat$sdq_cd))
+clin_cd[which(dat$sdq_cd > 3)] <- 1
+
+cd_hi_des <- as.data.frame(rbind(as.character(table(clin_cd)),round((table(clin_cd) / sum(table(clin_cd))*100),2) ))
+colnames(cd_hi_des) <- c("norm_CD", "high_CD")
+rownames(cd_hi_des) <- c("#", "%")
+
+# ADHD
+clin_adhd <- rep(0,length(dat$sdq_hyperactivity))
+clin_adhd[which(dat$sdq_hyperactivity > 6)] <- 1
+
+adhd_hi_des <- as.data.frame(rbind(as.character(table(clin_adhd)),round((table(clin_adhd) / sum(table(clin_adhd))*100),2) ))
+colnames(adhd_hi_des) <- c("norm_adhd", "high_adhd")
+rownames(adhd_hi_des) <- c("#", "%")
+
+# internalizing
+
+clin_internalizing <- rep(0,length(dat$sdq_internalizing))
+clin_internalizing[which(dat$sdq_internalizing > 8)] <- 1
+
+internalizing_hi_des <- as.data.frame(rbind(as.character(table(clin_internalizing)),round((table(clin_internalizing) / sum(table(clin_internalizing))*100),2) ))
+colnames(internalizing_hi_des) <- c("norm_internalizing", "high_internalizing")
+rownames(internalizing_hi_des) <- c("#", "%")
+
+clin_sx <- cbind(cu_hi_des, cd_hi_des)
+clin_sx <- cbind(clin_sx, adhd_hi_des)
+(clin_sx <- cbind(clin_sx, internalizing_hi_des))
+
+write.csv(
+  clin_sx,
+  paste0(base,"\\demographics_clinical_sx.csv"),
+  row.names=TRUE
+)
+
+```
+
+#### N by clinical CU
+```{r}
+  # divisors
+div_cu_clin <- rep(
+  rowSums(
+    table(
+      data.frame('cu' = dat$cu_high, 'cd' = clin_cd))
+    ),
+  2
+  )
+
+div_CD_clin <- c(
+  rep(as.numeric(table(clin_cd)[1]),
+      2),
+  rep(as.numeric(table(clin_cd)[2]),
+      2)
+  )
+
+div_ADHD_clin <- c(
+  rep(as.numeric(table(clin_adhd)[1]),
+      2
+      ),
+  rep(as.numeric(table(clin_adhd)[2]),
+      2)
+  )
+
+div_internalizing_clin <- c(
+  rep(as.numeric(table(clin_internalizing)[1]),
+      2),
+  rep(as.numeric(table(clin_internalizing)[2]),
+      2)
+  )
+
+  # setting up DF
+cu_sx <- data.frame(
+  "CU_Clin" = 
+    as.data.frame(table(data.frame('cu' = dat$cu_high, 'cd' = clin_cd)))$cu, 
+  "CU_N-*-Clin.CU" = 
+    div_cu_clin
+  )
+
+  # CD
+table_cd <- table(
+  data.frame('cu' = dat$cu_high, 'cd' = clin_cd)
+  )
+
+cd_sx <- cbind(
+  as.data.frame(table_cd),
+  as.data.frame(
+    round(
+      table(
+        data.frame('cu' = dat$cu_high, 'cd' = clin_cd)
+        ) / 
+        div_cu_clin, 
+      2
+      )
+    )$Freq
+  )
+
+cd_sx <- cbind(
+  cd_sx,
+  as.data.frame(
+    round(
+      table(
+        data.frame('cu' = dat$cu_high, 'cd' = clin_cd)
+        ) / 
+        div_CD_clin,
+      2)
+    )$Freq
+  )
+
+colnames(cd_sx) <- c(
+  "cu_clin", 
+  "CD_Clin", 
+  "CD_N-*-Clin.CU", 
+  "CD_%-*-N.CU", 
+  "CD_%-*-N.Clin.CD")
+
+cu_sx <- cbind(cu_sx,cd_sx[,2:5])
+
+
+table_adhd <- table(data.frame('cu' = dat$cu_high, 'adhd' = clin_adhd))
+adhd_sx <-  cbind(
+  as.data.frame(table_adhd),
+  as.data.frame(
+    round(
+      table(
+        data.frame('cu' = dat$cu_high, 'adhd' = clin_adhd)
+        ) / 
+        div_cu_clin,
+      2)
+    )$Freq
+  )
+
+adhd_sx <-  cbind(
+  adhd_sx,
+  as.data.frame(
+    round(
+      table(
+        data.frame('cu' = dat$cu_high, 'adhd' = clin_adhd)
+        ) / div_ADHD_clin,
+      2)
+    )$Freq
+  )
+
+colnames(adhd_sx) <- c("cu_clin", 
+                       "adhd_Clin", 
+                       "adhd_clin.N-*-Clin.CU", 
+                       "adhd_%-*-N.CU", 
+                       "adhd_%-*-N.Clin.adhd"
+                       )
+
+cu_sx <- cbind(cu_sx,adhd_sx[,2:5])
+
+table_internalizing <- table(
+  data.frame(
+    'cu' = dat$cu_high, 
+    'internalizing' = clin_internalizing
+    )
+  )
+
+internalizing_sx <-  cbind(
+  as.data.frame(table_internalizing),
+  as.data.frame(
+    round(
+      table(data.frame('cu' = dat$cu_high, 'internalizing' = clin_internalizing)
+            ) / 
+        div_cu_clin,
+      2)
+    )$Freq
+  )
+
+# Internalizing
+internalizing_sx <-  cbind(
+  internalizing_sx,as.data.frame(
+    round(
+      table(
+        data.frame('cu' = dat$cu_high, 'internalizing' = clin_internalizing)
+        ) / 
+        div_internalizing_clin ,
+      2)
+    )$Freq
+  )
+
+colnames(internalizing_sx) <- c("cu_clin", 
+                                "internalizing_Clin", 
+                                "internalizing_Clin.N-*-Clin.CU", 
+                                "internalizing_%-*-N.CU", 
+                                "internalizing_%-*-N.Clin.internal"
+                                )
+
+cu_sx <- cbind(cu_sx,internalizing_sx[,2:5])
+
+ch2 <- t(data.frame("t.value" = c(
+  "-",
+  "-",
+  "-",
+  round(t.test(dat$cu_high,clin_cd)$statistic,3),
+  "-",
+  "-",
+  "-",
+  round(t.test(dat$cu_high,clin_adhd)$statistic,3),
+  "-",
+  "-",
+  "-",
+  round(t.test(dat$cu_high,clin_internalizing)$statistic,3),
+  "-",
+  "-"
+  ), 
+  "p.value" = c(
+    "-", 
+    "-",
+    "-",
+    round(t.test(dat$cu_high,clin_cd)$p.value,3), 
+    "-",
+    "-",
+    "-",
+    round(t.test(dat$cu_high,clin_adhd)$p.value,3), 
+    "-",
+    "-",
+    "-",
+    round(t.test(dat$cu_high,clin_internalizing)$p.value,3),
+    "-",
+    "-"
+    )
+  )
+  )
+
+colnames(ch2) <- colnames(cu_sx)
+
+(cu_sx<-rbind(cu_sx,ch2))
+
+write.csv(
+  cu_sx,
+  paste0(base,"\\demographics_clinical_sx_by_CU.csv"),
+  row.names=TRUE
+)
+
+
+```
+* significant p values indicate greater concentration of presence inside high CU
+
+## Demographic Correlations
+```{r}
+
+dem_cor <- corrplot::cor.mtest(
+  dat[c(
+    "cu_total_sum",
+    "sdq_cd", 
+    "sex_male",
+    "race_white",
+    "iq",
+    "age",
+    "careless",
+    "sdq_hyperactivity",
+    "sdq_internalizing")])
+dem_cor_r <- as.data.frame((dem_cor$lowCI+dem_cor$uppCI)/2)
+dem_cor_p <- as.data.frame(cor.mtest(dem_cor_r))
+
+# Saving values
+write.csv(
+  dem_cor_p,
+  paste0(base,"\\demographics_cor_pvalue.csv"),
+  row.names=TRUE
+)
+
+write.csv(
+  dem_cor_r,
+  paste0(base,"\\demographics_cor_Rvalue.csv"),
+  row.names=TRUE
+)
+
+
+```
+
+
+### Correlation figure
+```{r}
+colnames(dem_cor_r) <- c("CU", "Conduct", "Male", "Age", "White", "IQ", "Careless", "ADHD", "Internalizing")
+rownames(dem_cor_r) <- c("CU", "Conduct", "Male", "Age", "White", "IQ", "Careless", "ADHD", "Internalizing")
+colnames(dem_cor_p) <- c("CU", "Conduct", "Male", "Age", "White", "IQ", "Careless", "ADHD", "Internalizing")
+rownames(dem_cor_p) <- c("CU", "Conduct", "Male", "Age", "White", "IQ", "Careless", "ADHD", "Internalizing")
+
+dem_cor_r<-data.matrix(dem_cor_r)
+diag(dem_cor_r)=0
+
+corrplot::corrplot(
+  dem_cor_r, 
+  method = "color", 
+  type="upper",  
+  diag=FALSE, 
+  tl.col="black",
+  p.mat = data.matrix(dem_cor_p), 
+  tl.srt=45, 
+  sig.level = c(0.05), 
+  pch.cex=0.9, 
+  insig = "label_sig",
+  col.lim=c(-0.65, 0.65),
+  is.corr=FALSE
+  )
+
+# not saved during kniting document because is causes error
+# ggsave(
+#   paste0(base_fig,"\\demographic_correlation.tiff"),
+#   plot = last_plot(),
+#   device = "tiff",
+#   scale = 1,
+#   width = 5,
+#   height = 5,
+#   units = "in",
+#   dpi = 300
+# )
+
+```
+
+## Phenotypic Correlations 
+* Correlations showing phenotypic associations to characterize sample
+* here we are substantiating that the antisocial prototypes in this sample
+  + positively associate with delinquency
+  + negatively associate with prosociality and reflective functioning
+
+```{r}
+phen_cor <- corrplot::cor.mtest(
+  dat[-which(dat$careless>0),c(
+    "cu_total_sum",
+    "sdq_cd", 
+    "delq_total_sum",
+    "sdq_prosocial",
+    "rfq_total")])
+phen_cor_p <- as.data.frame(phen_cor$p)
+phen_cor_r <- as.data.frame((phen_cor$lowCI+phen_cor$uppCI)/2)
+
+# Saving Values
+
+write.csv(
+  phen_cor_p,
+  paste0(base,"\\phenotype_cor_pvalue.csv"),
+  row.names=TRUE
+)
+
+write.csv(
+  phen_cor_r,
+  paste0(base,"\\phenotype_cor_Rvalue.csv"),
+  row.names=TRUE
+)
+```
+
+
+### Correlation figure
+```{r}
+colnames(phen_cor_r) <- c("CU", "Conduct", "Delinquency", "Prosociality", "Mentalizing")
+rownames(phen_cor_r) <- c("CU", "Conduct", "Delinquency", "Prosociality", "Mentalizing")
+colnames(phen_cor_p) <- c("CU", "Conduct", "Delinquency", "Prosociality", "Mentalizing")
+rownames(phen_cor_p) <- c("CU", "Conduct", "Delinquency", "Prosociality", "Mentalizing")
+
+phen_cor_r<-data.matrix(phen_cor_r)
+diag(phen_cor_r)=0
+
+corrplot::corrplot(
+  phen_cor_r, 
+  method = "color", 
+  type="upper",  
+  diag=FALSE, 
+  tl.col="black",
+  p.mat = data.matrix(phen_cor_p), 
+  tl.srt=45, 
+  sig.level = c(0.05), 
+  pch.cex=0.9, 
+  insig = "label_sig",
+  col.lim=c(-0.65, 0.65),
+  is.corr = FALSE
+  )
+
+# not saved during kniting document because is causes error
+# ggsave(
+#   paste0(base_fig,"\\phenotype_correlation.tiff"),
+#   plot = last_plot(),
+#   device = "tiff",
+#   scale = 1,
+#   width = 5,
+#   height = 5,
+#   units = "in",
+#   dpi = 300
+# )
+
+```
+
+## Variance retained
+* here we are testing how much variance is retained after removing variance in externalizing variables
+  + CU
+  + Conduct
+  + ADHD
+* we want to make sure we still have adequate variance to estimate our models
+
+```{r}
+xz <- dem_cor_r[1,8] # correlation from CU to conduct
+yz <- dem_cor_r[2,8] # correlation from conduct to ADHD
+xy <- dem_cor_r[1,2] # correlation between CU and conduct
+
+# shared correlation
+Rxyz <- sqrt((abs(xz**2) + abs(yz**2) - 2*(xz*yz*xy)) / (1-abs(xy**2)))
+# varaince explained R2
+R2xyz <- Rxyz**2
+# variance retained in CU and conduct
+1-R2xyz
+
+
+```
+* we retained > 50% of the variance in CU and conduct for estimation
+  + this is adequate for model estimation
+
+## Baseline Comparisons
+### Theory of mind by group
+* No baseline differences detected by group
+  + this means differences are not driven by baseline Theory of mind ability
+```{r}
+  ## making statistical figures
+    ## setting up dataframe with naming intact
+ggstat_df <- dat
+ggstat_df$cu_high[which(ggstat_df$cu_high==1)] <- "Clinical CU"
+ggstat_df$cu_high[which(ggstat_df$cu_high==0)] <- "Normative CU"
+ggstat_df$clin_cd <- clin_cd
+ggstat_df$clin_cd[which(ggstat_df$clin_cd==1)] <- "Clinical CD"
+ggstat_df$clin_cd[which(ggstat_df$clin_cd==0)] <- "Normative CD"
+ggstat_df$clin_adhd <- clin_adhd
+ggstat_df$clin_adhd[which(ggstat_df$clin_adhd==1)] <- "Clinical ADHD"
+ggstat_df$clin_adhd[which(ggstat_df$clin_adhd==0)] <- "Normative ADHD"
+ggstat_df$clin_internalizing <- clin_internalizing
+ggstat_df$clin_internalizing[which(ggstat_df$clin_internalizing==1)] <- "Clinical Internalizing"
+ggstat_df$clin_internalizing[which(ggstat_df$clin_internalizing==0)] <- "Normative Internalizing"
+ggstat_df$group_names <- rep(0,length(ggstat_df$record_id))
+ggstat_df$group_names[which(ggstat_df$group==1)] <- "Test: Single 1st"
+ggstat_df$group_names[which(ggstat_df$group==2)] <- "Test: Dual 1st"
+ggstat_df$group_names[which(ggstat_df$group==3)] <- "Control: Single 1st"
+ggstat_df$group_names[which(ggstat_df$group==4)] <- "Control: Dual 1st"
+
+ggstat_df$group_di_names <- rep(0,length(ggstat_df$record_id))
+ggstat_df$group_di_names[which(ggstat_df$group_di==1)] <- "Test"
+ggstat_df$group_di_names[which(ggstat_df$group_di==0)] <- "Control"
+```
+
+
+```{r}
+  # Baseline ToM differences (no difference -- as expected)
+    ### Violin demonstrating there are no ToM differences (for supplemental)
+ggstatsplot::ggbetweenstats(
+  data = ggstat_df, 
+  y = tom_s_acc_total_sum, 
+  x = group_names, 
+  ylab = "Baseline ToM", 
+  xlab = "Groups", 
+  results.subtitle = TRUE,
+  p.adjust.method = "fdr",
+  centrality.label.args = list(size=5, nudge_x = 0.5), 
+  pairwise.display = "all")
+
+ggsave(
+  paste0(base_fig,"\\baseline_ToM.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 10,
+  height = 7,
+  units = "in",
+  dpi = 300
+)
+```
+
+### Reaction time test vs. controls
+* Test group has longer reaction time
+  + This indicates that the task is working as expected
+```{r}
+  # ssst reaction time (test - control groups are different -- as expected)
+    ## test has a longer RT than control - as expected (for supplemental)
+ggstatsplot::ggbetweenstats(
+  data = ggstat_df, 
+  y = ssst_mean_rt, 
+  x = group_di_names, 
+  ylab = "SSST Reaction Time", 
+  xlab = "Control and Test Groups", 
+  results.subtitle = TRUE,
+  p.adjust.method = "fdr",
+  centrality.label.args = list(size=5, nudge_x = 0.6), 
+  pairwise.display = "all")
+
+ggsave(
+  paste0(base_fig,"\\ssst_rt_treat.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 6,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+```
+* Together this demonstrates that 
+ + 1) baseline ToM is no different between groups 
+ + 2) the loading task works as expected (longer reaction times for test group)
+
+
+### Phenotype by group
+#### CU
+```{r}
+
+ggstatsplot::ggpiestats(
+  data = ggstat_df, 
+  y = cu_high, 
+  x = group_names, 
+  ylab = "Clinical Callous-Unemotional Traits", 
+  xlab = "Groups", 
+  legend.title = "Groups", 
+  results.subtitle = TRUE,
+  p.adjust.method = "fdr",
+  centrality.label.args = list(size=5, nudge_x = 0.5), 
+  pairwise.display = "all")
+
+ggsave(
+  paste0(base_fig,"\\baseline_CU_by_group.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 10,
+  height = 7,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+#### CD
+```{r}
+
+ggstatsplot::ggpiestats(
+  data = ggstat_df, 
+  y = clin_cd, 
+  x = group_names, 
+  ylab = "Clinical Conduct", 
+  xlab = "Groups", 
+  legend.title = "Groups", 
+  results.subtitle = TRUE,
+  p.adjust.method = "fdr",
+  centrality.label.args = list(size=5, nudge_x = 0.5), 
+  pairwise.display = "all")
+
+ggsave(
+  paste0(base_fig,"\\baseline_CD_by_group.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 10,
+  height = 7,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+#### ADHD
+```{r}
+
+ggstatsplot::ggpiestats(
+  data = ggstat_df, 
+  y = clin_adhd, 
+  x = group_names, 
+  ylab = "Clinical ADHD", 
+  xlab = "Groups", 
+  legend.title = "Groups", 
+  results.subtitle = TRUE,
+  p.adjust.method = "fdr",
+  centrality.label.args = list(size=5, nudge_x = 0.5), 
+  pairwise.display = "all")
+
+ggsave(
+  paste0(base_fig,"\\baseline_ADHD_by_group.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 10,
+  height = 7,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+#### Internalizing
+```{r}
+
+ggstatsplot::ggpiestats(
+  data = ggstat_df, 
+  y = clin_internalizing, 
+  x = group_names, 
+  ylab = "Clinical Internalizing", 
+  xlab = "Groups", 
+  legend.title = "Groups", 
+  results.subtitle = TRUE,
+  p.adjust.method = "fdr",
+  centrality.label.args = list(size=5, nudge_x = 0.5), 
+  pairwise.display = "all")
+
+ggsave(
+  paste0(base_fig,"\\baseline_internalizing_by_group.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 10,
+  height = 7,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+
+## Measure Reliability
+* loading item level responses data
+```{r}
+reliability_dat <- read.csv(reliability)
+```
+
+### CU traits
+#### CFA
+* note we use 22 items and remove 2 items for poor psychometrics
+  + see: https://doi.org/10.1111/jcpp.12357 
+```{r}
+mod_bi <- "
+callous =~ icu4 + icu7 + icu8 + icu9 + icu11 + icu12 + icu18 + icu20 + icu21    
+uncaring =~ icu3 + icu5 + icu13 + icu15 + icu16 + icu17 + icu23 + icu24
+unemotional =~ icu1 + icu6 + icu14 + icu19 + icu22
+
+## bifactor
+cu =~ icu4 + icu7 + icu8 + icu9 + icu11 + icu12 + icu18 + icu20 + icu21 + icu3 + icu5 + icu13 + icu15 + icu16 + icu17 + icu23 + icu24 + icu1 + icu6 + icu14 + icu19 + icu22
+
+## uncorrelating bifactor from subscales
+cu ~~ 0*callous + 0*uncaring + 0*unemotional
+
+## correlating residuals based on modification indicies
+  # within factor residual correlations
+    # primarily positive worded items (e.g., Kemp et al. 2022)
+icu17 ~~ icu24
+icu4 ~~ icu18
+icu14 ~~ icu19
+icu3 ~~ icu16
+icu7 ~~ icu20
+icu8 ~~ icu18
+icu5 ~~ icu17
+icu1 ~~ icu14
+icu12 ~~ icu21
+
+"
+
+## Fitting bifactor model to view loadings
+fit_bi <- cfa(
+  mod_bi,
+  data=reliability_dat, 
+  estimator = "ML", 
+  missing = "FIML"
+  )
+
+## fit measures
+fitmeasures(
+  fit_bi, 
+  output = "matrix", 
+  fit.measures = c("chisq", "df", "pvalue", "tli", "cfi", "rmsea", "srmr")
+  )
+```
+* model fit is commensurate with previous factor analyses
+  + https://doi.org/10.1016/j.ijlp.2008.04.002
+  + https://doi.org/10.1007%2Fs10862-012-9315-4 
+
+#### Omega (w)
+```{r}
+omega_cu<-as.data.frame(
+  omega(
+    reliability_dat[,
+            which(
+              startsWith(
+                colnames(reliability_dat),
+                "icu"
+                )
+              )][,c(1:10,11:14,16:24)], # selecting 22 items use in CFA
+    nfactors = 3, 
+    plot = FALSE)$omega.group$total
+)
+colnames(omega_cu) <- "omega_cu"
+rownames(omega_cu) <- c("Overall", "Callous", "Unemotional", "Uncaring")
+format(omega_cu, digits=3)
+```
+* Overall omega is > 0.70 indicating the use of a total score is reliable
+
+### SDQ
+#### CFA
+```{r}
+
+## bi-factor model
+sdq_bi <- "
+emotional =~ sdq3 + sdq8 + sdq13 + sdq16 + sdq24
+conduct =~ sdq5 + sdq7 + sdq12 + sdq18 + sdq22
+hyperactivity =~ sdq2 + sdq10 + sdq15 + sdq21 + sdq25
+peer =~ sdq6 + sdq11 + sdq14 + sdq19 + sdq23
+prosocial =~ sdq1 + sdq4 + sdq9 + sdq17 + sdq20
+
+## bifactor
+sdq =~ sdq4 + sdq7 + sdq8 + sdq9 + sdq11 + sdq12 + sdq18 + sdq20 + sdq21 + sdq3 + sdq5 + sdq13 + sdq15 + sdq16 + sdq17 + sdq23 + sdq24 + sdq1 + sdq6 + sdq14 + sdq19 + sdq22 + sdq2 + sdq10 + sdq25
+
+## uncorrelating bifactor from subscales
+sdq ~~ 0*emotional + 0*conduct + 0*hyperactivity + 0*peer + 0*prosocial
+
+"
+
+# to fit the model
+fit_sdq_bi <- cfa(
+  sdq_bi,
+  data=reliability_dat, 
+  estimator = "ML", 
+  missing = "FIML")
+
+fitmeasures(
+  fit_sdq_bi,
+  output = "matrix", 
+  fit.measures = c("chisq", "df", "pvalue", "tli", "cfi", "rmsea", "srmr")
+  )
+```
+* model fit is excellent
+
+#### Omega (w)
+##### Five factors
+```{r}
+omega_sdq<-as.data.frame(
+  omega(
+    reliability_dat[,which(startsWith(colnames(reliability_dat), "sdq"))][,1:25], 
+    covar=TRUE, 
+    nfactors = 5, 
+    plot = FALSE)$omega.group$total
+  )
+colnames(omega_sdq) <- "omega_sdq"
+rownames(omega_sdq) <- c("Overall", "Hyperactivity", "Conduct", "Peer", "Prosocial","Emotional")
+format(omega_sdq, digits=3)
+```
+* omega for hyperactivity and conduct are adequate (> 0.70)
+  + so the use of these subscales is indicated as reliable measures
+* But internalizing factors are no (<0.70)
+  + so peer and emotional subscales are marginally reliable
+* Since we only use internalizing factors as a total internalizing factor
+  + lets look to see if the general internalizing factor is reliable
+
+##### In/Externalizing factors
+```{r}
+omega_sdq_ext_int<-as.data.frame(
+  omega(
+    reliability_dat[,which(startsWith(colnames(reliability_dat), "sdq"))][,1:25], 
+    covar=TRUE, 
+    nfactors = 2, 
+    two.ok = TRUE,
+    option = "equal",
+    plot = FALSE)$omega.group$total
+)
+colnames(omega_sdq_ext_int) <- "omega_sdq_ext_int"
+rownames(omega_sdq_ext_int) <- c("Overall", "Externalizing", "Internalizing")
+format(omega_sdq_ext_int, digits=3)
+
+```
+* Internalizing is reliable (> 0.70)
+
+# A Priori Power Analysis
+## Constructing Model
+```{r, message=FALSE,warning=FALSE, results='hide'}
+# Set seed for reproducibility
+set.seed(123)
+
+# Define parameters for the simulation
+n_individuals <- 85  # Number of participants
+n_timepoints <- 2    # Number of time points
+n <- n_individuals * n_timepoints
+
+# Simulate individual-level data
+individuals <- rep(1:n_individuals, each = n_timepoints)
+time <- rep(1:n_timepoints, times = n_individuals)  # Two time points (1, 2)
+treatment <- rep(c(0, 1), each = n / 2)  # Binary treatment variable (0, 1)
+phenotype <- rnorm(n_individuals, mean = 0, sd = 1)  # Continuous phenotype 
+phenotype <- rep(phenotype, each = n_timepoints)  # Repeated phenotype 
+phenotype2 <- rep(rnorm(n_individuals, mean = 0, sd = 0.5), each = n_timepoints)
+order <- c(rep(c(0, 1), each = n / 4),(0))
+order <- c(order,order)
+iqs <- rep(rnorm(n_individuals, mean=100, sd=1), each = n_timepoints)
+control1 <- rep(rnorm(n_individuals, mean=5, sd=1.1),each = n_timepoints)
+control2 <- rep(rnorm(n_individuals, mean=2, sd=0.8),each = n_timepoints)
+
+# Set fixed effects coefficients
+beta_0 <- 10  # Intercept
+beta_time <- 1  # Effect of time
+beta_treatment <- 2  # Effect of treatment
+beta_phenotype <- -1  # Effect of phenotype (continuous)
+beta_interaction <- 1.5  # Effect of treatment*time*phenotype interaction
+sigma_individual <- 1.5  # Random intercept variance for individuals
+sigma_residual <- 1.0  # Residual standard deviation
+
+# Create the response variable with interaction effect
+y <- beta_0 +
+  beta_time * (time - 1) +  # Center time to avoid multicollinearity
+  beta_treatment * treatment +
+  beta_phenotype * phenotype +
+  beta_interaction * treatment * (time - 1) * phenotype +  # Interaction term
+  rnorm(n, 0, sigma_individual) +  # Random intercept noise
+  rnorm(n, 0, sigma_residual)  # Residual noise
+
+# Create data frame
+sim_data <- data.frame(
+  y = y,
+  time = factor(time),
+  treatment = factor(treatment),
+  phenotype = scale(phenotype, center = TRUE, scale = FALSE),  # Centered 
+  phenotype2 = scale(phenotype2, center = TRUE, scale = FALSE),  # Centered 
+  order = factor(order),
+  individual = factor(individuals),
+  iqs = scale(iqs, center = TRUE, scale = FALSE),  # Centered
+  control1 = scale(control1, center = TRUE, scale = FALSE),  # Centered 
+  control2 = scale(control2, center = TRUE, scale = FALSE)  # Centered 
+)
+
+# creating residualized interactions like we intend with the full model
+  # group x time 
+sim_data$int_timegp <- resid(
+  lm(I(as.numeric(treatment)*as.numeric(time)) ~ 
+       as.numeric(treatment)+as.numeric(time), data=sim_data)
+  )
+
+  # phenotype x phenotype2
+sim_data$int_phenotype2phenotype <- resid(
+  lm(I(phenotype2*phenotype) ~ phenotype2+phenotype, data=sim_data)
+  )
+sim_data$int_phenotype2phenotypegp <- resid(
+  lm(I(phenotype2*phenotype*as.numeric(treatment)) ~ 
+       phenotype2+phenotype+as.numeric(treatment), data=sim_data)
+  )
+sim_data$int_phenotype2phenotypetime <- resid(
+  lm(I(phenotype2*phenotype*as.numeric(treatment)*as.numeric(time)) ~ 
+       phenotype2+phenotype+as.numeric(treatment)+as.numeric(time), 
+     data=sim_data)
+  )
+sim_data$int_phenotype2phenotypegptime <- resid(
+  lm(I(phenotype2*phenotype*as.numeric(time)) ~ 
+       phenotype2+phenotype+as.numeric(time), data=sim_data)
+  )
+
+  # phenotype
+sim_data$int_phenotypegp <- resid(
+  lm(I(phenotype*as.numeric(treatment)) ~ 
+       phenotype+as.numeric(treatment), data=sim_data)
+  )
+sim_data$int_phenotypetime <- resid(
+  lm(I(phenotype*as.numeric(time)) ~ 
+       phenotype+as.numeric(time), data=sim_data)
+  )
+sim_data$interaction_phenotype_time_treat <- resid(
+  lm(I(phenotype*as.numeric(treatment)*as.numeric(time)) ~ 
+       phenotype+as.numeric(treatment)+as.numeric(time), data=sim_data)
+  )
+
+  # phenotype2
+sim_data$int_phenotype2gp <- resid(
+  lm(I(phenotype2*as.numeric(treatment)) ~ 
+       phenotype2+as.numeric(treatment), data=sim_data)
+  )
+sim_data$int_phenotype2time <- resid(
+  lm(I(phenotype2*as.numeric(time)) ~ 
+       phenotype2+as.numeric(time), data=sim_data)
+  )
+sim_data$int_phenotype2timegp <- resid(
+  lm(I(phenotype2*as.numeric(treatment)*as.numeric(time)) ~ 
+       phenotype2+as.numeric(treatment)+as.numeric(time), data=sim_data)
+  )
+
+# Fit the mixed model accounting for individual variance
+power_model <- lmer(
+  y ~ 
+    time +
+    treatment +
+    phenotype +
+    phenotype2 + 
+    int_timegp +
+    int_phenotype2phenotype +
+    int_phenotype2phenotypegp +
+    int_phenotype2phenotypegptime +
+    int_phenotypegp + 
+    int_phenotypetime + 
+    interaction_phenotype_time_treat +
+    int_phenotype2gp + 
+    int_phenotype2time +
+    int_phenotype2timegp +
+    iqs +
+    control1 +
+    control2 +
+    (1 | individual), 
+  data = sim_data, 
+  control = control)
+
+```
+
+## Power analysis
+```{r, warning=FALSE,message=FALSE, cache=TRUE,results='hide'}
+power_curve <- powerCurve(
+  power_model,
+  nsim = 100, 
+  seed = 1979,
+  breaks = c(
+    10*n_timepoints,
+    30*n_timepoints,
+    50*n_timepoints,
+    65*n_timepoints,
+    80*n_timepoints
+    ), 
+  along = "interaction_phenotype_time_treat"
+  )
+```
+
+```{r, warning=FALSE,message=FALSE, echo=FALSE}
+print(power_curve, level=0.999)
+
+```
+* Require at least 50 (100/2 time points) participants for ~80% power (ci < 80)
+  + sample of 80 (160/2 time points) affords >90% power (lower ci > 90)
+  + test effects can be reliably estimated with current sample 
+  + by modeling repeated measures mixed effects
+
+
+# Primary Analysis
+* **Preregistration**
+  + https://doi.org/10.17605/OSF.IO/BHWEU
+* **General approach**
+  + we use random effects modeling with a repeated measures design
+  + we build on this by using a random effect block bootstrap to build confidence in our estimates
+* **Random effects modeling**
+  + allows us to model individual variation as a source of error across repeated measures and account for correlation between time points
+* **Random effect block bootstrapping**
+  + allows us to loosen assumptions on our model so as to not influence outcomes based on imposed assumptions
+  + allows us to more accurately estimate our interaction terms (given interactions can induce non-normality and influence results)
+  + allows us to correct mixed effect modeling assumption errors (residual distribution and autocorrelation)
+  + such an approach is critical when control participants are expected to be the same across repeated measures
+* **Important assumptions we assess and address**: 
+  + see: https://doi.org/10.1177/1094428119877457
+  + Our IVs do not depend on the DV (we want exogeneity not endogeneity)
+  + autocorrelation, heteroskedasticity, residual distribution, outliers that influence results
+
+## **Change in ToM - Accuracy**
+### **Overall** ToM *Accuracy* 
+#### Model
+```{r}
+total_mix_p <- lmer(tom_acc_total  ~
+                      cu + 
+                      sdq_cd + 
+                      sex_male +
+                      race_white +
+                      iq +
+                      careless +
+                      sdq_hyperactivity +
+                      sdq_internalizing +
+                      time +
+                      group_di +
+                      order_var +
+                      int_gptime +
+                      int_cdcu +
+                      int_cdcugp +
+                      int_cdcugptime +
+                      int_cugp +
+                      int_cugptime +
+                      int_cdgp +
+                      int_cdgptime +
+                      (1|id),
+                    data = dat_long
+                    ) 
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE}
+assumptions(total_mix_p, dat_long)
+```
+
+#### Model performance
+```{r}
+(total_mix_p_st <- performance(total_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(total_mix_p)
+(tom_total_df <- mix_boot_report(total_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_total_df, 
+  tom_change_accuracy_total,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+dat_plot <- dat_long
+random.intercpet.preds_accuracy_total <- predict(total_mix_p)
+dat_plot$hi_lo2<-ifelse(dat_plot$group_di == 0,"Control","Test")
+dat_plot$time_rc<-ifelse(dat_plot$time == 0,"Single","Dual")
+dat_plot$time_rc<-factor(dat_plot$time_rc, levels=c("Single","Dual"))
+```
+
+##### Individual data plot
+```{r, warning=FALSE,message=FALSE}
+  # CU_______
+dat_plot %>%                 # data
+  mutate(                    # to properly order control and test groups
+    hi_lo = fct_relevel(
+      hi_lo2, 
+      "Control",
+      "Test")
+    ) %>%
+  ggplot(                   # plot
+    aes(
+      x=factor(time), 
+      y=random.intercpet.preds_accuracy_total, 
+      group = id, 
+      colour = cu)
+    ) +
+  geom_smooth(              # fit line
+    method='lm',
+    formula ='y ~ x', 
+    size=1.25
+    ) + 
+  geom_point(size=3) +      # plot points
+  labs(
+    x=NULL, 
+    y="Theory of Mind - Accuracy"
+    ) +
+  scale_color_continuous(   # scale the color and labels accordingly 
+    "CU Traits",
+    breaks = c(
+      min(dat_plot$cu),
+      max(dat_plot$cu)
+      ), 
+    labels = c("low", "high"),
+    type = "gradient",
+    low="light grey",
+    high="black"
+    ) + 
+  ylim(10,26) +
+  facet_wrap(~hi_lo)  +   # faceting plots by task (single ToM adn dual ToM)
+  scale_x_discrete(
+    labels=c(
+      "Single", 
+      "Dual"
+      )
+    ) + 
+  theme_minimal() +       # setting theme and text parameters
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+      ),
+    axis.title=element_text(
+      size=rel(1.6)
+      ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.5)
+      ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.5)
+      ),
+    legend.title = element_text(
+      size=rel(1.4)
+      ), 
+    legend.text = element_text(
+      size=rel(1.1)
+      )
+    ) 
+  # saving plot
+ggsave(
+  paste0(base_fig,"\\tom_total_accuracy_individual_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 6,
+  height = 7,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add denominator- rescale mean score
+    y=random.intercpet.preds_accuracy_total, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Theory of Mind - Accuracy"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  ylim(10,26) +
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.6,0.19),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_total_accuracy_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+
+### **Affective** ToM *Accuracy* 
+#### Model
+```{r}
+at_mix_p <- lmer(tom_acc_at  ~
+                      cu + 
+                      sdq_cd + 
+                      sex_male +
+                      race_white +
+                      iq +
+                      careless +
+                      sdq_hyperactivity +
+                      sdq_internalizing +
+                      time +
+                      group_di +
+                      order_var +
+                      int_gptime +
+                      int_cdcu +
+                      int_cdcugp +
+                      int_cdcugptime +
+                      int_cugp +
+                      int_cugptime +
+                      int_cdgp +
+                      int_cdgptime +
+                      (1|id),
+                    data = dat_long
+                    ) 
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE}
+assumptions(at_mix_p, dat_long)
+```
+
+#### Model performance
+```{r}
+(at_mix_p_st <- performance(at_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cacht=TRUE}
+# summary(at_mix_p)
+(tom_at_df <- mix_boot_report(at_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_at_df, 
+  tom_change_accuracy_affective,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+random.intercpet.preds_accuracy_at <- predict(at_mix_p)
+```
+
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add demonstrator- rescale mean score
+    y=random.intercpet.preds_accuracy_at, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Affective Theory of Mind - Accuracy"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  ylim(2,9.5) +
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.60,0.17),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_affective_accuracy_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+### **Cognitive** ToM *Accuracy* 
+#### Model
+```{r}
+ct_mix_p <- lmer(tom_acc_ct  ~
+                   cu + 
+                   sdq_cd + 
+                   sex_male +
+                   race_white +
+                   iq +
+                   careless +
+                   sdq_hyperactivity +
+                   sdq_internalizing +
+                   time +
+                   group_di +
+                   order_var +
+                   int_gptime +
+                   int_cdcu +
+                   int_cdcugp +
+                   int_cdcugptime +
+                   int_cugp +
+                   int_cugptime +
+                   int_cdgp +
+                   int_cdgptime +
+                   (1|id),
+                 data = dat_long
+                 ) 
+
+```
+
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(ct_mix_p, dat_long)
+```
+
+
+#### Model performance
+```{r}
+(ct_mix_p_st <- performance(ct_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(ct_mix_p)
+(tom_ct_df <- mix_boot_report(ct_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_ct_df, 
+  tom_change_accuracy_cognitive,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+random.intercpet.preds_accuracy_ct <- predict(ct_mix_p)
+```
+
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add demonstrator- rescale mean score
+    y=random.intercpet.preds_accuracy_ct, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Cognitive Theory of Mind - Accuracy"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  ylim(2,9.5) +
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.60,0.17),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_cognitive_accuracy_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+### **Physical** ToM *Accuracy*
+#### Model
+```{r}
+pc_mix_p <- lmer(tom_acc_pc  ~
+                   cu + 
+                   sdq_cd + 
+                   sex_male +
+                   race_white +
+                   iq +
+                   careless +
+                   sdq_hyperactivity +
+                   sdq_internalizing +
+                   time +
+                   group_di +
+                   order_var +
+                   int_gptime +
+                   int_cdcu +
+                   int_cdcugp +
+                   int_cdcugptime +
+                   int_cugp +
+                   int_cugptime +
+                   int_cdgp +
+                   int_cdgptime +
+                   (1|id),
+                 data = dat_long
+                 ) 
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(pc_mix_p, dat_long)
+```
+
+#### Model performance
+```{r}
+(pc_mix_p_st <- performance(pc_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(pc_mix_p)
+(tom_pc_df <- mix_boot_report(pc_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_pc_df, 
+  tom_change_accuracy_physical,
+  row.names=TRUE
+  )
+```
+
+#### Figures 
+* none needed because nothing was significant
+
+
+## **Change in ToM - Reaction Time**
+### **Overall** ToM *Reaction Time* 
+#### Model
+```{r}
+total_rt_mix_p <- lmer(tom_rt_total  ~ 
+                         cu + 
+                         sdq_cd + 
+                         sex_male +
+                         race_white +
+                         iq +
+                         careless +
+                         sdq_hyperactivity +
+                         sdq_internalizing +
+                         time +
+                         group_di +
+                         order_var+
+                         int_gptime +
+                         int_cdcu +
+                         int_cdcugp +
+                         int_cdcugptime +
+                         int_cugp +
+                         int_cugptime +
+                         int_cdgp +
+                         int_cdgptime +
+                         (1|id),
+                       data = dat_long) 
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(total_rt_mix_p, dat_long)
+```
+
+
+#### Model performance
+```{r}
+(total_rt_mix_p_st <- performance(total_rt_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(total_rt_mix_p)
+(tom_rt_total_df <- mix_boot_report(total_rt_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_rt_total_df, 
+  tom_change_RT_total,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+random.intercpet.preds_reaction_total <- predict(total_rt_mix_p)
+```
+
+##### Individual data plot
+```{r, warning=FALSE,message=FALSE}
+  # CU_______
+dat_plot %>%                 # data
+  mutate(                    # to properly order control and test groups
+    hi_lo = fct_relevel(
+      hi_lo2, 
+      "Control",
+      "Test")
+    ) %>%
+  ggplot(                   # plot
+    aes(
+      x=factor(time), 
+      y=random.intercpet.preds_reaction_total, 
+      group = id, 
+      colour = cu)
+    ) +
+  geom_smooth(              # fit line
+    method='lm',
+    formula ='y ~ x', 
+    size=1.25
+    ) + 
+  geom_point(size=3) +      # plot points
+  labs(
+    x=NULL, 
+    y="Theory of Mind - RT"
+    ) +
+  scale_color_continuous(   # scale the color and labels accordingly 
+    "CU Traits",
+    breaks = c(
+      min(dat_plot$cu),
+      max(dat_plot$cu)
+      ), 
+    labels = c("low", "high"),
+    type = "gradient",
+    low="light grey",
+    high="black"
+    ) + 
+  ylim(1.5,3.75) +
+  facet_wrap(~hi_lo)  +   # faceting plots by task (single ToM and dual ToM)
+  scale_x_discrete(
+    labels=c(
+      "Single", 
+      "Dual"
+      )
+    ) + 
+  theme_minimal() +       # setting theme and text parameters
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+      ),
+    axis.title=element_text(
+      size=rel(1.6)
+      ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.5)
+      ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.5)
+      ),
+    legend.title = element_text(
+      size=rel(1.4)
+      ), 
+    legend.text = element_text(
+      size=rel(1.1)
+      )
+    ) 
+  # saving plot
+ggsave(
+  paste0(base_fig,"\\tom_total_reaction_individual_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 6,
+  height = 7,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add denominator- rescale mean score
+    y=random.intercpet.preds_reaction_total, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Theory of Mind - RT"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  ylim(1.5,4) +
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.6,0.19),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_total_reaction_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+
+```
+
+
+
+### **Affective** ToM *Reaction Time* 
+#### Model
+```{r}
+at_rt_mix_p <- lmer(tom_rt_at  ~ 
+                         cu + 
+                         sdq_cd + 
+                         sex_male +
+                         race_white +
+                         iq +
+                         careless +
+                         sdq_hyperactivity +
+                         sdq_internalizing +
+                         time +
+                         group_di +
+                         order_var+
+                         int_gptime +
+                         int_cdcu +
+                         int_cdcugp +
+                         int_cdcugptime +
+                         int_cugp +
+                         int_cugptime +
+                         int_cdgp +
+                         int_cdgptime +
+                         (1|id),
+                       data = dat_long) 
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(at_rt_mix_p, dat_long)
+```
+
+#### Model performance
+```{r}
+(at_rt_mix_p_st <- performance(at_rt_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(at_rt_mix_p)
+(tom_rt_at_df <- mix_boot_report(at_rt_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_rt_at_df, 
+  tom_change_RT_affective,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+random.intercpet.preds_reaction_at <- predict(at_rt_mix_p)
+```
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add denominator- rescale mean score
+    y=random.intercpet.preds_reaction_at, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Affective Theory of Mind - RT"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  ylim(1.5,4.5) +
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.6,0.19),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_affective_reaction_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+
+### **Cognitive** ToM *Reaction Time* 
+#### Model
+```{r}
+ct_rt_mix_p <- lmer(tom_rt_ct  ~ 
+                         cu + 
+                         sdq_cd + 
+                         sex_male +
+                         race_white +
+                         iq +
+                         careless +
+                         sdq_hyperactivity +
+                         sdq_internalizing +
+                         time +
+                         group_di +
+                         order_var+
+                         int_gptime +
+                         int_cdcu +
+                         int_cdcugp +
+                         int_cdcugptime +
+                         int_cugp +
+                         int_cugptime +
+                         int_cdgp +
+                         int_cdgptime +
+                         (1|id),
+                       data = dat_long) 
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(ct_rt_mix_p, dat_long)
+```
+
+
+#### Model performance
+```{r}
+(ct_rt_mix_p_st <- performance(ct_rt_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(ct_rt_mix_p)
+(tom_rt_ct_df <- mix_boot_report(ct_rt_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_rt_ct_df, 
+  tom_change_RT_cognitive,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+random.intercpet.preds_reaction_ct <- predict(ct_rt_mix_p)
+```
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add denominator- rescale mean score
+    y=random.intercpet.preds_reaction_ct, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Cognitive Theory of Mind - RT"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  ylim(1.5,4.5) +
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.6,0.82),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_cognitive_reaction_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+### **Physical** ToM *Reaction Time* 
+#### Model
+```{r}
+pc_rt_mix_p <- lmer(tom_rt_pc  ~ 
+                         cu + 
+                         sdq_cd + 
+                         sex_male +
+                         race_white +
+                         iq +
+                         careless +
+                         sdq_hyperactivity +
+                         sdq_internalizing +
+                         time +
+                         group_di +
+                         order_var+
+                         int_gptime +
+                         int_cdcu +
+                         int_cdcugp +
+                         int_cdcugptime +
+                         int_cugp +
+                         int_cugptime +
+                         int_cdgp +
+                         int_cdgptime +
+                         (1|id),
+                       data = dat_long) 
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(pc_rt_mix_p, dat_long)
+```
+
+
+#### Model performance
+```{r}
+(pc_rt_mix_p_st <- performance(pc_rt_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(pc_rt_mix_p)
+(tom_rt_pc_df <- mix_boot_report(pc_rt_mix_p))
+
+# saving results to csv
+write.csv(
+  tom_rt_pc_df, 
+  tom_change_RT_physical,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+* not necessary because nothing is significant
+
+# Secondary Analyses
+* These analyses supplement the primary analysis by adding detail and context
+* Here we will look at
+  + Change between time points on contrasts between theory of mind conditions
+  + Loading effects of the dual task
+  + If change in affective ToM after load associates with delinquency
+* For Contrasts we use the same approach as the Primary Analyses
+  + We are testing change in these contrasts from single to dual task
+* For loading effects we use a single timepoint approach
+  + Instead of individual variation - we account for ordering random variance
+* For association with delinquency 
+  + we use the same approach as above as we use a single timepoint approach
+  + change between time points is a single metric
+
+
+## **Change in ToM - Contrasts**
+### Contrast considerations
+* For accurate contrast estimation - we remove variance predicted by pc alone
+  + We do this by subtracting pc from at and regressing out variance in pc
+  + This is an indicated method redressing this issue
+  + See: https://doi.org/10.1177/0013164412445473 
+  + We avoided pitfalls suggested by this article by not double conditioning
+  + And only condition on the base of this contrast (here pc)
+  + This accounts for random individual variation in the contrasted metric 
+  + And removes variance that cannot be explicitly be predicted by pc
+* A subtraction score can bias results due to:
+  + Collinearity - subtracting highly correlated variables
+  + Loss of variance - subtracting two variables you loose individual variance
+  + Retaining subtrahend variance - erroneous associations mimic the subtrahend 
+  + Model fit issues- this can erroneously alter relationship among predictors
+* Conceptually - consider if at and pc are highly related
+  + a subtraction method would retain variance that can be predicted by pc
+  + if the subtraction score is highly related to pc - the metric is pc driven
+* We demonstrate this concept below via correlations showing 
+  + 1) **ct and pc are highly related**
+  + 2) **subtraction method *strongly related* to pc** - **(pc needs removed)**
+  + 3) **subtraction method *not related* to ct** - **(no need to remove ct)**
+  + 4) **residualized contrast doesn't add non-normality or bias**
+  + 5) **residualized contrast *removes confounding variance* of pc**
+  + 6) **the residualized contrast represents the same contrast information** 
+
+#### Subtraction concerns 
+##### **Highly related variables**
+ +  **ct and pc are highly related**
+
+* correlation to show similarity between at and pc
+```{r}
+cor.test(dat_long$tom_acc_at, dat_long$tom_acc_pc)
+```
+  + at and pc variables are significantly and highly correlated
+  + a simple subtraction may introduce issues in our model
+  + but we still want to make sure removing pc variance is correct
+
+
+
+##### **Related to subtrahend**
+  + **subtraction method *strongly related* to pc** - 
+  + **pc variance *needs removed* **
+
+* correlation to between pc and ct-pc subtraction method
+```{r}
+  # calculating subtraction
+at_pc_diff_only <- (dat_long$tom_acc_at - dat_long$tom_acc_pc)
+  # correlation
+cor.test(dat_long$tom_acc_pc, at_pc_diff_only)
+```
+  + this evidences that pc (the subtrahend) is confounding our contrast
+  + those that do worse on pc will influence the contrast inversely
+  + those that do better on pc will influence the contrast inversely
+  + with a significant correlation - the subtraction method still driven by pc
+  + we can conclude that variance still influences the metric
+  + thus pc variance needs removed
+
+
+##### **Unrelated to minuend**
+  + **subtraction method *not related* to ct** 
+  + **ct variance removal *not needed* **
+
+* correlation between ct and ct-pc subtraction method
+```{r}
+cor.test(dat_long$tom_acc_ct, at_pc_diff_only)
+```
+  + this evidences ct (the minuend) is not confounding our contrast
+  + with a non-significant correlation - the subtraction method not driven by ct
+  + therefore we don't need to remove ct variance
+
+#### Residualized improvements
+##### **Normality**
+  + **residualized contrast doesn't add non-normality or bias**
+
+* calculating contrast
+```{r}
+  ## calculating contrast
+dat_long$tom_acc_at_pc <- resid(
+  lm((dat_long$tom_acc_at - dat_long$tom_acc_pc)~ dat_long$tom_acc_pc)
+  )
+```
+
+* showing variance in residualized contrast
+```{r}
+describe(dat_long$tom_acc_at_pc)[,c("mean","sd", "median", "min","max", "range", "skew","kurtosis")]
+```
+  + we still have adequate variance and didn't introduce non-normality bias
+
+##### **Subtrahend orthogonal**
+  + **residualized contrast *removes confounding variance* of pc** 
+
+* correlation between residualized contrast and pc
+```{r}
+cor.test(dat_long$tom_acc_at_pc,dat_long$tom_acc_pc)
+```
+  + this evidences that pc is no longer a confound in our contrast
+  + as we can see our method removed the pc variance confounding the contrast
+  + therefore we want to use this approach
+  + but we want to ensure the residualized contrast carries the same information
+
+##### **Retains contrast**
+  + **the residualized contrast represents the same contrast information**
+
+* correlation between residualized contrast and subtraction method
+```{r}
+  ## correlation between "subtraction" and "residualized" contrast score
+cor.test(at_pc_diff_only,dat_long$tom_acc_at_pc)
+```
+  + this evidence that the residualized contrast carries the same information
+  + a correlation of 0.88 and ci between 0.84-0.91 indicates: 
+    + these are essential indistinguishable statistically 
+    + equally represent the contrast between at>pc 
+  + but we remove the confounding variance of pc
+
+#### **Use residual contrast**
+* The residualized contrast is desired because:
+  + we are accounting for confounding variance 
+  + retain only the variance of at>pc (that isn't predicted by pc)
+  + represent the same information for the contrast without confound of pc
+
+### **Affective > Physical** ToM
+#### Calculating contrast
+```{r}
+  ## calculating contrast
+dat_long$tom_acc_at_pc <- resid(
+  lm((dat_long$tom_acc_at - dat_long$tom_acc_pc)~ dat_long$tom_acc_pc)
+  )
+```
+
+#### Model
+```{r}
+
+at_pc_mix_p <- lmer(tom_acc_at_pc  ~ 
+                      cu + 
+                      sdq_cd + 
+                      sex_male +
+                      race_white +
+                      iq +
+                      careless +
+                      sdq_hyperactivity +
+                      sdq_internalizing +
+                      time +
+                      group_di +
+                      order_var+
+                      int_gptime +
+                      int_cdcu +
+                      int_cdcugp +
+                      int_cdcugptime +
+                      int_cugp +
+                      int_cugptime +
+                      int_cdgp +
+                      int_cdgptime +
+                      (1|id),
+                    data = dat_long)
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(at_pc_mix_p, dat_long)
+```
+
+#### Model performance
+```{r}
+(at_pc_mix_p_st <- performance(at_pc_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE, warning=FALSE}
+# summary(at_pc_mix_p)
+(at_pc_df <- mix_boot_report(at_pc_mix_p))
+
+# saving results to csv
+write.csv(
+  at_pc_df, 
+  tom_change_accuracy_affective_physical_contrast,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+random.intercpet.preds_cont_at_pc <- predict(at_pc_mix_p)
+```
+
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add denominator- rescale mean score
+    y=random.intercpet.preds_cont_at_pc, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Affective > Physical Theory of Mind"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  # ylim(10,26) +
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.6,0.19),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_at_pc_contrast_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+### **Cognitive > Physical** ToM
+#### Contrast
+```{r}
+  ## calculating contrast
+dat_long$tom_acc_ct_pc <- resid(
+  lm((dat_long$tom_acc_ct - dat_long$tom_acc_pc)~ dat_long$tom_acc_pc)
+  )
+```
+#### Model
+```{r}
+ct_pc_mix_p <- lmer(tom_acc_ct_pc  ~ 
+                      cu + 
+                      sdq_cd + 
+                      sex_male +
+                      race_white +
+                      iq +
+                      careless +
+                      sdq_hyperactivity +
+                      sdq_internalizing +
+                      time +
+                      group_di +
+                      order_var+
+                      int_gptime +
+                      int_cdcu +
+                      int_cdcugp +
+                      int_cdcutime + 
+                      int_cdcugptime +
+                      int_cugp +
+                      int_cugptime +
+                      int_cdgp +
+                      int_cdgptime +
+                      (1|id),
+                    data = dat_long)
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(ct_pc_mix_p, dat_long)
+```
+
+#### Model performance
+```{r}
+(ct_pc_mix_p_st <- performance(ct_pc_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE}
+# summary(ct_pc_mix_p)
+(ct_pc_df <- mix_boot_report(ct_pc_mix_p))
+
+# saving results to csv
+write.csv(
+  ct_pc_df, 
+  tom_change_accuracy_cognitive_physical_contrast,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+* Not necessary - nothing significant
+
+
+### **Affective > Cognitive** ToM 
+#### Contrast
+```{r}
+  ## calculating contrast
+dat_long$tom_acc_at_ct <- resid(
+  lm((dat_long$tom_acc_at - dat_long$tom_acc_ct)~ dat_long$tom_acc_ct)
+  )
+```
+#### Model
+```{r}
+at_ct_mix_p <- lmer(tom_acc_at_ct  ~ 
+                      cu + 
+                      sdq_cd + 
+                      sex_male +
+                      race_white +
+                      iq +
+                      careless +
+                      sdq_hyperactivity +
+                      sdq_internalizing +
+                      time +
+                      group_di +
+                      order_var+
+                      int_gptime +
+                      int_cdcu +
+                      int_cdcugp +
+                      int_cdcugptime +
+                      int_cugp +
+                      int_cugptime +
+                      int_cdgp +
+                      int_cdgptime +
+                      (1|id),
+                    data = dat_long)
+
+```
+
+#### Assumption check
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+assumptions(at_ct_mix_p, dat_long)
+```
+
+#### Model performance
+```{r}
+(at_ct_mix_p_st <- performance(at_ct_mix_p))
+```
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE, warning=FALSE}
+# summary(at_ct_mix_p)
+(at_ct_df <- mix_boot_report(at_ct_mix_p))
+
+# saving results to csv
+write.csv(
+  at_ct_df, 
+  tom_change_accuracy_affective_cognitive_contrast,
+  row.names=TRUE
+  )
+```
+
+#### Figures
+##### Organizing plot data
+```{r}
+random.intercpet.preds_cont_at_ct <- predict(at_ct_mix_p)
+```
+
+##### Average line by group
+```{r, message=FALSE,warning=FALSE}
+  # CU______________
+ggplot(
+  data=dat_plot, 
+  aes(
+    x=cu*22,                              # add denominator- rescale mean score
+    y=random.intercpet.preds_cont_at_ct, 
+    group = factor(time_rc), 
+    colour = factor(time_rc)
+    )
+  ) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+    ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Affective > Cognitive Theory of Mind"
+    ) +
+  scale_colour_grey(
+    "Task", 
+    start = .7, 
+    end= .2
+    ) + 
+  facet_grid(. ~ fct_relevel(
+    dat_plot$hi_lo2, 
+    "Control",
+    "Test")
+    ) +
+  theme_minimal() + 
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.25)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.1)
+    ),
+    axis.text.y = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.2)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.6,0.19),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+    ) 
+
+ggsave(
+  paste0(base_fig,"\\tom_at_ct_contrast_task_line_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5.5,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+## **Dual-Task ToM - Loading Effect** 
+* Here we model interaction terms because
+  + Loading effect is still present in control participants (although smaller)
+  + This needs to be accounted for by modeling test vs no test conditions
+* Interpretation
+  + **Higher values** = ***less*** *loading effect* (easier to complete trial)
+  + **Lower values**  = ***greater*** *loading effect* (greater difficulty completing trial)
+
+### **Total** ToM *Loading Effect* 
+#### Model
+```{r}
+load_eff_total <- lm(
+  tom_dual_task_eff_rt_total ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest,
+  data = dat
+)
+
+total_load_eff <- lmer(
+  tom_dual_task_eff_rt_total ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest +
+    (1|order_var),
+  data = dat
+)
+
+anova(total_load_eff,load_eff_total)
+compare_performance(load_eff_total, total_load_eff)
+
+```
+* clearly the random effect improves estimation - we we will run random eff
+  + better model fit and error
+  + more accurate R2
+
+
+#### Assumptions
+```{r, message=FALSE,warning=FALSE}
+
+model = total_load_eff
+if (check_singularity(model)==FALSE){
+  cat(" Singularity:     ", crayon::green("OK: Model Not Singular"))
+} else if (check_singularity(model)==TRUE){
+  cat(" Singularity:     ", crayon::red("Warning: Model Singular"))
+}
+
+if (check_convergence(model)[1]==TRUE){
+  cat("\n Convergence:     ", crayon::green("OK: Model Converged"))
+} else if (check_convergence(model)[1]==FALSE){
+  cat("\n Convergence:     ", crayon::red("Warning: Model did not converge"))
+}
+
+if (check_autocorrelation(model)>0.05){
+  cat("\n Autocorrelation: ", crayon::green("OK: Residuals appear to be independent and not autocorrelated"))
+} else if (check_autocorrelation(model)<0.05){
+  cat("\n Autocorrelation: ", crayon::red("Warning: Residuals autocorrelated"))
+}
+
+if (all(check_collinearity(model)$VIF) < 3){
+  cat("\n Multicolinearity:", crayon::green("OK: No Multicolinearity"))
+} else if (any(check_collinearity(model)$VIF) > 3) {
+  cat("\n Multicolinearity:", crayon::red("Warning: Multicolinearity"))
+}
+
+if (all(check_outliers(model)) ==FALSE){
+  cat("\n Outliers:        ", crayon::green("OK: No outliers"))
+} else if (all(check_outliers(model)) ==TRUE) {
+  cat("\n Outliers:        ", crayon::red("Warning: Outliers detected"))
+}
+
+```
+
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+
+df<-as.data.frame(as.data.frame(summary(total_load_eff)$coefficients),digits=3)
+df_ci<-lme4::confint.merMod(total_load_eff)
+total_load_eff_df<-cbind(df,as.data.frame(df_ci)[3:16,])
+re <- (rbind(c(rowMeans(df_ci[c(1,2),]),NA,NA,NA,NA,NA),
+      c(rowMeans(var(df_ci[c(1,2),])),NA,NA,NA,NA,NA)))
+colnames(re)<-colnames(total_load_eff_df)
+rownames(re) <- c("residual", "intercept")
+total_load_eff_df<-rbind(total_load_eff_df,re)
+r2<-t(as.data.frame(c(performance(total_load_eff)$R2_marginal,NA,NA,NA,NA,NA,NA)))
+colnames(r2)<-colnames(total_load_eff_df)
+rownames(r2) <- c("R2")
+(total_load_eff_df<-rbind(total_load_eff_df,r2))
+
+# saving results to csv
+write.csv(
+  total_load_eff_df,
+  total_load_eff_file,
+  row.names=TRUE
+  )
+
+```
+
+#### Figures
+```{r, message=FALSE, warning=FALSE}
+total_load_eff.pred <- predict(total_load_eff)
+
+ggplot(
+  data=dat, 
+  aes(
+    x=cu_total_sum,                           
+    y=total_load_eff.pred, 
+    group = factor(group_di), 
+    colour = factor(group_di)
+  )
+) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+  ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Load Effects - Total"
+  ) +
+  scale_colour_grey(
+    "Condition",
+    start = .7, 
+    end= .2,
+    labels = c("Control", "Test")
+  ) + 
+  theme_minimal() +       # setting theme and text parameters
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.5)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.5)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.21,0.17),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+  ) + annotate("text", 
+               x=4.7,
+               y=0.3,
+               label = paste("R2", "=", round(performance(total_load_eff)$R2_marginal,3)), 
+               fontface="bold", 
+               size=5
+               )
+
+ggsave(
+  paste0(base_fig,"\\load_effect_total_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 4,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+
+
+### **Affective** ToM *Loading Effect* 
+#### Model
+```{r}
+load_eff_at <- lm(
+  tom_dual_task_eff_rt_at ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest,
+  data = dat
+)
+
+at_load_eff <- lmer(
+  tom_dual_task_eff_rt_at ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest +
+    (1|order_var),
+  data = dat
+)
+
+anova(at_load_eff,load_eff_at)
+compare_performance(at_load_eff,load_eff_at)[c("RMSE", "Sigma")]
+
+```
+* random effect model error is better - so  running random eff
+
+
+#### Assumptions
+```{r, message=FALSE,warning=FALSE}
+model = at_load_eff
+if (check_singularity(model)==FALSE){
+  cat(" Singularity:     ", crayon::green("OK: Model Not Singular"))
+} else if (check_singularity(model)==TRUE){
+  cat(" Singularity:     ", crayon::red("Warning: Model Singular"))
+}
+
+if (check_convergence(model)[1]==TRUE){
+  cat("\n Convergence:     ", crayon::green("OK: Model Converged"))
+} else if (check_convergence(model)[1]==FALSE){
+  cat("\n Convergence:     ", crayon::red("Warning: Model did not converge"))
+}
+
+if (check_autocorrelation(model)>0.05){
+  cat("\n Autocorrelation: ", crayon::green("OK: Residuals appear to be independent and not autocorrelated"))
+} else if (check_autocorrelation(model)<0.05){
+  cat("\n Autocorrelation: ", crayon::red("Warning: Residuals autocorrelated"))
+}
+
+if (all(check_collinearity(model)$VIF) < 3){
+  cat("\n Multicolinearity:", crayon::green("OK: No Multicolinearity"))
+} else if (any(check_collinearity(model)$VIF) > 3) {
+  cat("\n Multicolinearity:", crayon::red("Warning: Multicolinearity"))
+}
+
+if (all(check_outliers(model)) ==FALSE){
+  cat("\n Outliers:        ", crayon::green("OK: No outliers"))
+} else if (all(check_outliers(model)) ==TRUE) {
+  cat("\n Outliers:        ", crayon::red("Warning: Outliers detected"))
+}
+
+
+```
+
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+
+df<-as.data.frame(as.data.frame(summary(at_load_eff)$coefficients),digits=3)
+df_ci<-lme4::confint.merMod(at_load_eff)
+at_load_eff_df<-cbind(df,as.data.frame(df_ci)[3:16,])
+re <- (rbind(c(rowMeans(df_ci[c(1,2),]),NA,NA,NA,NA,NA),
+      c(rowMeans(var(df_ci[c(1,2),])),NA,NA,NA,NA,NA)))
+colnames(re)<-colnames(at_load_eff_df)
+rownames(re) <- c("residual", "intercept")
+at_load_eff_df<-rbind(at_load_eff_df,re)
+r2<-t(as.data.frame(c(performance(at_load_eff)$R2_marginal,NA,NA,NA,NA,NA,NA)))
+colnames(r2)<-colnames(at_load_eff_df)
+rownames(r2) <- c("R2")
+(at_load_eff_df<-rbind(at_load_eff_df,r2))
+
+# saving results to csv
+write.csv(
+  at_load_eff_df,
+  at_load_eff_file,
+  row.names=TRUE
+  )
+
+```
+
+
+#### Figures
+```{r, message=FALSE, warning=FALSE}
+at_load_eff.pred <- predict(at_load_eff)
+
+ggplot(
+  data=dat, 
+  aes(
+    x=cu_total_sum,                           
+    y=at_load_eff.pred, 
+    group = factor(group_di), 
+    colour = factor(group_di)
+  )
+) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+  ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Load Effects - Affective"
+  ) +
+  scale_colour_grey(
+    "Condition",
+    start = .7, 
+    end= .2,
+    labels = c("Control", "Test")
+  ) + 
+  theme_minimal() +       # setting theme and text parameters
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.5)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.5)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.21,0.17),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+  ) + annotate("text", 
+               x=4.7,
+               y=0.3,
+               label = paste("R2", "=", round(performance(at_load_eff)$R2_marginal,3)), 
+               fontface="bold", 
+               size=5
+               )
+
+ggsave(
+  paste0(base_fig,"\\load_effect_affective_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 4,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+
+```
+
+
+
+### **Cognitive** ToM *Loading Effect* 
+#### Model
+```{r}
+load_eff_ct <- lm(
+  tom_dual_task_eff_rt_ct ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest,
+  data = dat
+)
+
+ct_load_eff <- lmer(
+  tom_dual_task_eff_rt_ct ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest +
+    (1|order_var),
+  data = dat
+)
+
+anova(ct_load_eff,load_eff_ct)
+
+```
+* random effects improves model estimation
+
+#### Assumptions
+```{r, message=FALSE,warning=FALSE}
+model = ct_load_eff
+if (check_singularity(model)==FALSE){
+  cat(" Singularity:     ", crayon::green("OK: Model Not Singular"))
+} else if (check_singularity(model)==TRUE){
+  cat(" Singularity:     ", crayon::red("Warning: Model Singular"))
+}
+
+if (check_convergence(model)[1]==TRUE){
+  cat("\n Convergence:     ", crayon::green("OK: Model Converged"))
+} else if (check_convergence(model)[1]==FALSE){
+  cat("\n Convergence:     ", crayon::red("Warning: Model did not converge"))
+}
+
+if (check_autocorrelation(model)>0.05){
+  cat("\n Autocorrelation: ", crayon::green("OK: Residuals appear to be independent and not autocorrelated"))
+} else if (check_autocorrelation(model)<0.05){
+  cat("\n Autocorrelation: ", crayon::red("Warning: Residuals autocorrelated"))
+}
+
+if (all(check_collinearity(model)$VIF) < 3){
+  cat("\n Multicolinearity:", crayon::green("OK: No Multicolinearity"))
+} else if (any(check_collinearity(model)$VIF) > 3) {
+  cat("\n Multicolinearity:", crayon::red("Warning: Multicolinearity"))
+}
+
+if (all(check_outliers(model)) ==FALSE){
+  cat("\n Outliers:        ", crayon::green("OK: No outliers"))
+} else if (all(check_outliers(model)) ==TRUE) {
+  cat("\n Outliers:        ", crayon::red("Warning: Outliers detected"))
+}
+
+
+
+```
+
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+
+df<-as.data.frame(as.data.frame(summary(ct_load_eff)$coefficients),digits=3)
+df_ci<-lme4::confint.merMod(ct_load_eff)
+ct_load_eff_df<-cbind(df,as.data.frame(df_ci)[3:16,])
+re <- (rbind(c(rowMeans(df_ci[c(1,2),]),NA,NA,NA,NA,NA),
+      c(rowMeans(var(df_ci[c(1,2),])),NA,NA,NA,NA,NA)))
+colnames(re)<-colnames(ct_load_eff_df)
+rownames(re) <- c("residual", "intercept")
+ct_load_eff_df<-rbind(ct_load_eff_df,re)
+r2<-t(as.data.frame(c(performance(ct_load_eff)$R2_marginal,NA,NA,NA,NA,NA,NA)))
+colnames(r2)<-colnames(ct_load_eff_df)
+rownames(r2) <- c("R2")
+(ct_load_eff_df<-rbind(ct_load_eff_df,r2))
+
+# saving results to csv
+write.csv(
+  ct_load_eff_df,
+  ct_load_eff_file,
+  row.names=TRUE
+  )
+
+```
+
+#### Figures
+```{r, message=FALSE, warning=FALSE}
+ct_load_eff.pred <- predict(ct_load_eff)
+
+ggplot(
+  data=dat, 
+  aes(
+    x=cu_total_sum,                           
+    y=ct_load_eff.pred, 
+    group = factor(group_di), 
+    colour = factor(group_di)
+  )
+) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+  ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Load Effects - Cognitive"
+  ) +
+  scale_colour_grey(
+    "Condition",
+    start = .7, 
+    end= .2,
+    labels = c("Control", "Test")
+  ) + 
+  theme_minimal() +       # setting theme and text parameters
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.5)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.5)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.21,0.17),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+  ) + annotate("text", 
+               x=4.7,
+               y=0.3,
+               label = paste("R2", "=", round(performance(ct_load_eff)$R2_marginal,3)), 
+               fontface="bold", 
+               size=5
+               )
+
+ggsave(
+  paste0(base_fig,"\\load_effect_cognitive_CU.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 4,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+
+```
+
+### **Physical** ToM *Loading Effect* 
+#### Model
+```{r}
+load_eff_pc <- lm(
+  tom_dual_task_eff_rt_pc ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest,
+  data = dat
+)
+
+pc_load_eff <- lmer(
+  tom_dual_task_eff_rt_pc ~
+    cu_total_mean +
+    sdq_cd +
+    sex_male +
+    race_white +
+    iq +
+    careless +
+    sdq_hyperactivity +
+    sdq_internalizing +
+    group_di + 
+    int_cucd +
+    int_cucdtest +
+    int_cutest +
+    int_cdtest +
+    (1|order_var),
+  data = dat
+)
+
+anova(pc_load_eff,load_eff_pc)
+```
+* random effects improves estimation
+
+
+#### Assumptions
+```{r, message=FALSE,warning=FALSE}
+model = pc_load_eff
+if (check_singularity(model)==FALSE){
+  cat(" Singularity:     ", crayon::green("OK: Model Not Singular"))
+} else if (check_singularity(model)==TRUE){
+  cat(" Singularity:     ", crayon::red("Warning: Model Singular"))
+}
+
+if (check_convergence(model)[1]==TRUE){
+  cat("\n Convergence:     ", crayon::green("OK: Model Converged"))
+} else if (check_convergence(model)[1]==FALSE){
+  cat("\n Convergence:     ", crayon::red("Warning: Model did not converge"))
+}
+
+if (check_autocorrelation(model)>0.05){
+  cat("\n Autocorrelation: ", crayon::green("OK: Residuals appear to be independent and not autocorrelated"))
+} else if (check_autocorrelation(model)<0.05){
+  cat("\n Autocorrelation: ", crayon::red("Warning: Residuals autocorrelated"))
+}
+
+if (all(check_collinearity(model)$VIF) < 3){
+  cat("\n Multicolinearity:", crayon::green("OK: No Multicolinearity"))
+} else if (any(check_collinearity(model)$VIF) > 3) {
+  cat("\n Multicolinearity:", crayon::red("Warning: Multicolinearity"))
+}
+
+if (all(check_outliers(model)) ==FALSE){
+  cat("\n Outliers:        ", crayon::green("OK: No outliers"))
+} else if (all(check_outliers(model)) ==TRUE) {
+  cat("\n Outliers:        ", crayon::red("Warning: Outliers detected"))
+}
+
+
+```
+
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+
+df<-as.data.frame(as.data.frame(summary(pc_load_eff)$coefficients),digits=3)
+df_ci<-lme4::confint.merMod(pc_load_eff)
+pc_load_eff_df<-cbind(df,as.data.frame(df_ci)[3:16,])
+re <- (rbind(c(rowMeans(df_ci[c(1,2),]),NA,NA,NA,NA,NA),
+      c(rowMeans(var(df_ci[c(1,2),])),NA,NA,NA,NA,NA)))
+colnames(re)<-colnames(pc_load_eff_df)
+rownames(re) <- c("residual", "intercept")
+pc_load_eff_df<-rbind(pc_load_eff_df,re)
+r2<-t(as.data.frame(c(performance(pc_load_eff)$R2_marginal,NA,NA,NA,NA,NA,NA)))
+colnames(r2)<-colnames(pc_load_eff_df)
+rownames(r2) <- c("R2")
+(pc_load_eff_df<-rbind(pc_load_eff_df,r2))
+
+# saving results to csv
+write.csv(
+  pc_load_eff_df,
+  pc_load_eff_file,
+  row.names=TRUE
+  )
+
+```
+
+#### Figures
+* None needed - not sig
+
+## Deliquency Association 
+### Metrics
+#### Change score
+  + we derive a change score from the repeated measures affective ToM model
+  + we take the predicted intercepts for each individual for each timepoint
+  + and subtract them
+```{r}
+
+diff_at <- (
+  random.intercpet.preds_accuracy_at[86:170] - 
+    random.intercpet.preds_accuracy_at[0:85]
+  )
+```
+
+#### Interactions
+  + here we derive interactions with the change in affective ToM with CU and CD
+```{r}
+dat$int_chgp <- resid(lm(I(group_di*diff_at)~ group_di + diff_at, data= dat))
+dat$int_chgpcucd <- resid(lm(I(int_cucd*diff_at)~ int_cucd + diff_at, data= dat))
+dat$int_chgpcu <- resid(lm(I(int_cutest*diff_at)~ int_cutest + diff_at, data= dat))
+dat$int_chgpcd <- resid(lm(I(int_cdtest*diff_at)~ int_cdtest + diff_at, data= dat))
+```
+
+#### log of deliquency
+  + log transforming the delinquency scale (as it is numeric frequency variable)
+    * we add a small number so we are not inflating the transformation with 0's
+    * this also ensures the log runs correctly
+  + we use a natural log because it is more interpret able
+    * interpret as percent difference
+```{r}
+
+dat$delq_total_nlog <- log1p(dat$delq_total_sum+0.1)
+```
+
+### Model
+```{r, warning=FALSE,message=FALSE}
+delq_m <- lmer(
+  delq_total_nlog ~
+    cu_total_sum +
+    sdq_cd +
+    diff_at + 
+    group_di +
+    int_chgp +
+    int_cucd + 
+    int_cutest +
+    int_cdtest +
+    int_chgpcucd +
+    int_chgpcu +
+    int_chgpcd +
+    order_var +
+    sex_male +
+    iq +
+    careless +
+    race_white + 
+    sdq_hyperactivity +
+    sdq_internalizing +
+    (1|order_var),
+  control = control,
+  data = dat
+  )
+
+
+```
+
+#### Assumptions
+```{r, message=FALSE,warning=FALSE}
+model = delq_m
+if (check_singularity(pc_load_eff)==FALSE){
+  cat(" Singularity:     ", crayon::green("OK: Model Not Singular"))
+} else if (check_singularity(pc_load_eff)==TRUE){
+  cat(" Singularity:     ", crayon::red("Warning: Model Singular"))
+}
+
+if (check_convergence(model)[1]==TRUE){
+  cat("\n Convergence:     ", crayon::green("OK: Model Converged"))
+} else if (check_convergence(model)[1]==FALSE){
+  cat("\n Convergence:     ", crayon::red("Warning: Model did not converge"))
+}
+
+if (check_autocorrelation(model)>0.05){
+  cat("\n Autocorrelation: ", crayon::green("OK: Residuals appear to be independent and not autocorrelated"))
+} else if (check_autocorrelation(model)<0.05){
+  cat("\n Autocorrelation: ", crayon::red("Warning: Residuals autocorrelated"))
+}
+
+if (all(check_collinearity(model)$VIF) < 3){
+  cat("\n Multicolinearity:", crayon::green("OK: No Multicolinearity"))
+} else if (any(check_collinearity(model)$VIF) > 3) {
+  cat("\n Multicolinearity:", crayon::red("Warning: Multicolinearity"))
+}
+```
+
+
+#### Results (boostrap corrected)
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+
+df<-as.data.frame(as.data.frame(summary(delq_m)$coefficients),digits=3)
+df_ci<-lme4::confint.merMod(delq_m)
+delq_m_df<-cbind(df,as.data.frame(df_ci)[3:21,])
+re <- (rbind(c(rowMeans(df_ci[c(1,2),]),NA,NA,NA,NA,NA),
+      c(rowMeans(var(df_ci[c(1,2),])),NA,NA,NA,NA,NA)))
+colnames(re)<-colnames(delq_m_df)
+rownames(re) <- c("residual", "intercept")
+delq_m_df<-rbind(delq_m_df,re)
+r2<-t(as.data.frame(c(performance(delq_m)$R2_marginal,NA,NA,NA,NA,NA,NA)))
+colnames(r2)<-colnames(delq_m_df)
+rownames(r2) <- c("R2")
+(delq_m_df<-rbind(delq_m_df,r2))
+
+# saving results to csv
+write.csv(
+  delq_m_df,
+  delq_file,
+  row.names=TRUE
+  )
+
+```
+
+#### Figures
+```{r, message=FALSE, warning=FALSE}
+delq.pred <- predict(delq_m)
+
+ll <- rep(0, length(delq.pred))
+ll[which(delq.pred<=0)] <- 1
+
+ggplot(
+  data=dat, 
+  aes(
+    x=cu_total_sum,                           
+    y=delq.pred, 
+    group = factor(ll), 
+    colour = factor(ll)
+  )
+) +
+  geom_smooth(
+    method='lm',
+    se=FALSE, 
+    size=2
+  ) + 
+  geom_point(alpha=0.7)+
+  labs(
+    x="Callous-Unemotional Traits", 
+    y="Delinquency"
+  ) +
+  scale_colour_grey(
+    "Load Resiliance",
+    start = .7, 
+    end= .2,
+    labels = c("Non-Resiliant", "Resiliant")
+  ) + 
+  theme_minimal() +       # setting theme and text parameters
+  theme(
+    axis.text=element_text(
+      size=rel(1.1)
+    ),
+    axis.title=element_text(
+      size=rel(1.6)
+    ), 
+    strip.text.x.top = element_text(
+      colour = "black", 
+      face = "bold",
+      size=rel(2.5)
+    ),
+    axis.text.x = element_text(
+      colour = "black",
+      face="plain",
+      size=rel(1.5)
+    ),
+    legend.title = element_text(
+      size=rel(1.4)
+    ), 
+    legend.text = element_text(
+      size=rel(1.1)
+    ),
+    legend.position = c(0.15,0.1),
+    legend.background = element_rect(
+      fill="white", 
+      color = "grey")
+  ) + 
+  ylim(-0.4,0.95) +
+  annotate("text", 
+               x=27.5,
+               y= 0.95,
+               label = paste("R2", "=", round(performance(delq_m)$R2_marginal,3)), 
+               fontface="bold", 
+               size=5
+               )
+
+ggsave(
+  paste0(base_fig,"\\delinquency.tiff"),
+  plot = last_plot(),
+  device = "tiff",
+  scale = 1,
+  width = 5,
+  height = 5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+
+# Tertiary Analyses
+* Here we examine (1) baseline single ToM (2) odds ratio test > control
+  + (1) we run a series of regression to examine phenotype associations with ToM
+  + (2) we use a probability to determine if task caused effects
+  
+
+## Single ToM 
+* Here we look at
+  + **Accuracy** and **Reaction Time**
+* NOTE - since this is a single performance - no need to look at test vs not
+  + we only look at phenotype associations for the entire sample
+
+### Model
+```{r}
+models_s <- function(x) {
+  model1 <- lm(x ~ 
+                   cu_total_mean +
+                   sdq_cd +
+                   sex_male +
+                   race_white +
+                   iq +
+                   careless +
+                   sdq_hyperactivity +
+                   sdq_internalizing,
+                 data = dat)
+  return(model1)
+}
+
+
+tom_s_df <- dat[,c(
+  "tom_s_acc_total_sum",
+  "tom_s_acc_at_sum",
+  "tom_s_acc_ct_sum",
+  "tom_s_acc_pc_sum",
+  "tom_s_rt_total_mean",
+  "tom_s_rt_at_mean",
+  "tom_s_rt_ct_mean",
+  "tom_s_rt_pc_mean"
+  )
+  ]
+tom_s_out <- apply(tom_s_df,2, models_s)
+```
+
+### Results
+```{r}
+ind <- 1
+for (ii in tom_s_out){
+  s_name <- names(tom_s_out[ind])
+  ind <- ind+1
+  s_out <- summary(ii)
+  cat(c("\n \n", s_name," ~\n"))
+  print(s_out)
+  s_df<-as.data.frame(s_out$coefficients)
+  write.csv(
+    s_df,
+    paste0(base,"\\single_", s_name, ".csv"),
+    row.names = TRUE
+  )
+}
+```
+
+## Odds Ratio of Test Exposure
+```{r}
+  # creating change score for overall ToM
+diff_tom <- (
+  (random.intercpet.preds_accuracy_total[86:170] - 
+    random.intercpet.preds_accuracy_total[0:85]) + 
+    abs(mean((random.intercpet.preds_accuracy_total[86:170] - 
+    random.intercpet.preds_accuracy_total[0:85])[which(dat$group_di==0)]))
+)
+  # creating a probability of reduction during dual task
+    ## initiating list
+p_n <- rep(0,length(diff_tom))
+  ## Identifying those lower than 0 to indicate reduction in ToM performance
+p_n[which(diff_tom < 0)] <- 1
+
+  # calculating probabilities for OR
+    ## probability of negative in test group
+p_n_test <- mean(p_n ==1 &  dat$group_di ==1)
+    ## probability of positive for test group
+p_p_test <- mean(p_n ==0 &  dat$group_di ==1)
+    ## probability of negative for control group
+p_n_ctrl <- mean(p_n ==1 &  dat$group_di ==0)
+    ## probability of positive for control group
+p_p_ctrl <- mean(p_n ==0 &  dat$group_di ==0)
+
+OR <- (p_n_test/p_p_test) / (p_n_ctrl/p_p_ctrl)
+
+
+print(paste("Odds ratio of test > control group effect (no phenotype) negatively impacting ToM = ", OR))
+```
+
