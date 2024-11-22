@@ -18,70 +18,7 @@ output:
   + Publication this data replicates: https://doi.org/10.1080/02699931.2023.2195154
 
 # Setup
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-# suppressing error for multiple iterations of a model 
-  # over 10,000 resamples - we expect a few singular fits 
-  # because this doesn't impact subsequent resamples we suppress this error
-control=lme4::lmerControl(
-  check.conv.singular = lme4::.makeCC(action = "ignore",  tol = 1e-4)
-  )
-# correlation plot function for use with "corrplot" package
-cor.mtest <- function(mat, ...) {
-  mat <- as.matrix(mat)
-  n <- ncol(mat)
-  p.mat<- matrix(NA, n, n)
-  diag(p.mat) <- 0
-  for (i in 1:(n - 1)) {
-    for (j in (i + 1):n) {
-      tmp <- cor.test(mat[, i], mat[, j], ...)
-      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
-    }
-  }
-  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
-  p.mat
-}
-# file path base
-base = "D:\\CU OneDrive Sync\\2 Projects\\Me-S2-CU_CC-ToM_dual\\dual_task_analysis\\results"
-base_dat = "D:\\CU OneDrive Sync\\2 Projects\\Me-S2-CU_CC-ToM_dual\\dual_task_data\\raw_data"
-base_fig = "D:\\CU OneDrive Sync\\2 Projects\\Me-S2-CU_CC-ToM_dual\\dual_task_analysis\\figures"
-# file name for data
-dataframe_final_subs<-paste0(base_dat,"\\dataframe_final_subs-85.csv")
-reliability<- paste0(base_dat,"\\participant_self_reports_dataframe-full.csv")
-# file names to save results 
-tom_change_accuracy_total<- paste0(base,"\\tom_change_accuracy_total.csv")
-tom_change_accuracy_affective<- paste0(
-  base,"\\tom_change_accuracy_affective.csv"
-  )
-tom_change_accuracy_physical <- paste0(
-  base,"\\tom_change_accuracy_physical.csv"
-  )
-tom_change_accuracy_cognitive <- paste0(
-  base,"\\tom_change_accuracy_cognitive.csv")
-tom_change_RT_total <- paste0(base,"\\tom_change_RT_total.csv"
-                              )
-tom_change_RT_affective <- paste0(base,"\\tom_change_RT_affective.csv")
-tom_change_RT_cognitive <- paste0(base,"\\tom_change_RT_cognitive.csv")
-tom_change_RT_physical <- paste0(base,"\\tom_change_RT_physical.csv")
-tom_change_accuracy_affective_physical_contrast <- paste0(
-  base,
-  "\\tom_change_accuracy_affective-physical_contrast.csv"
-  )
-tom_change_accuracy_cognitive_physical_contrast <- paste0(
-  base,
-  "\\tom_change_accuracy_cognitive-physical_contrast.csv"
-  )
-tom_change_accuracy_affective_cognitive_contrast <- paste0(
-  base,
-  "\\tom_change_accuracy_affective-cognitive_contrast.csv"
-  )
-total_load_eff_file <- paste0(base,"\\tom_total_load_eff.csv")
-at_load_eff_file <- paste0(base,"\\tom_affective_load_eff.csv")
-ct_load_eff_file <- paste0(base,"\\tom_cognitive_load_eff.csv")
-pc_load_eff_file <- paste0(base,"\\tom_physical_load_eff.csv")
-delq_file <- paste0(base,"\\delequency_pred.csv")
-
-```
+## removed so that personal file paths are not public
 
 ## Packages Used 
 ```{r, message=FALSE, warning=FALSE}
